@@ -1,0 +1,27 @@
+{
+  "id": "lobster-device-control",
+  "id": "lobster-device-control",
+  "name": "LobsterDeviceControl",
+  "description": "通过 WebSocket 控制 Android 设备。OpenClaw 下发自然语言任务，手机端自主执行。",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "wsPort": {
+        "type": "number",
+        "description": "WebSocket 服务端口，监听手机连接。",
+        "default": 18790
+      },
+      "authTokenLifetime": {
+        "type": "number",
+        "description": "配对 Token 有效期（秒）。",
+        "default": 86400
+      },
+      "maxDevices": {
+        "type": "number",
+        "description": "最大同时连接设备数。",
+        "default": 3
+      }
+    }
+  }
+}

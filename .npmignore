@@ -1,0 +1,7 @@
+node_modules/
+dist/
+*.ts
+!*.d.ts
+tsconfig.json
+tsconfig.build.json
+eslint.config.mjs

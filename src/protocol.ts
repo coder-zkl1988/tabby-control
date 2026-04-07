@@ -1,0 +1,220 @@
+/**
+ * lobster-device-control protocol
+ *
+ * All shared types and Zod schemas for the device control plugin.
+ * Single source of truth — imported by ws-server.ts, task-coordinator.ts, tools.ts.
+ */
+
+import { z } from 'zod';
+
+// ─── Primitives ───────────────────────────────────────────────────────────────
+
+export const DeviceIdSchema = z.string().min(1);
+export type DeviceId = z.infer<typeof DeviceIdSchema>;
+
+export const TaskIdSchema = z.string().min(1);
+export type TaskId = z.infer<typeof TaskIdSchema>;
+
+export const TimestampSchema = z.number().int().positive();
+export type Timestamp = z.infer<typeof TimestampSchema>;
+
+// ─── Auth ────────────────────────────────────────────────────────────────────
+
+export const DeviceCapabilitiesSchema = z.object({
+  model: z.string().optional(),
+  osVersion: z.number().optional(),
+  screenWidth: z.number().optional(),
+  screenHeight: z.number().optional(),
+});
+export type DeviceCapabilities = z.infer<typeof DeviceCapabilitiesSchema>;
+
+export const AuthMessageSchema = z.object({
+  type: z.literal('auth'),
+  token: z.string(),
+  deviceId: DeviceIdSchema,
+  capabilities: DeviceCapabilitiesSchema.optional(),
+});
+export type AuthMessage = z.infer<typeof AuthMessageSchema>;
+
+export const ConnectedMessageSchema = z.object({
+  type: z.literal('connected'),
+  serverSessionId: z.string(),
+});
+export type ConnectedMessage = z.infer<typeof ConnectedMessageSchema>;
+
+// ─── Channels ─────────────────────────────────────────────────────────────────
+
+export const ChannelSchema = z.union([
+  z.literal('task'),
+  z.literal('mirror'),
+  z.literal('control'),
+]);
+export type Channel = z.infer<typeof ChannelSchema>;
+
+// ─── Task Channel ────────────────────────────────────────────────────────────
+
+export const ExecuteParamsSchema = z.object({
+  taskId: TaskIdSchema,
+  task: z.string().min(1),
+  mode: z.enum(['autonomous']).default('autonomous'),
+});
+export type ExecuteParams = z.infer<typeof ExecuteParamsSchema>;
+
+export const ExecuteBatchParamsSchema = z.object({
+  devices: z.array(DeviceIdSchema).min(1),
+  tasks: z.array(z.object({
+    deviceId: DeviceIdSchema,
+    task: z.string().min(1),
+  })).min(1),
+});
+export type ExecuteBatchParams = z.infer<typeof ExecuteBatchParamsSchema>;
+
+export const CancelParamsSchema = z.object({
+  taskId: TaskIdSchema,
+});
+export type CancelParams = z.infer<typeof CancelParamsSchema>;
+
+export const AgentProgressParamsSchema = z.object({
+  taskId: TaskIdSchema,
+  step: z.number().int().min(1),
+  action: z.string(),
+  target: z.string().optional(),
+  progressPercent: z.number().min(0).max(100),
+  thinking: z.string().optional(),
+  screenshot: z.string().optional(), // base64 PNG
+});
+export type AgentProgressParams = z.infer<typeof AgentProgressParamsSchema>;
+
+// ─── Step Record ──────────────────────────────────────────────────────────────
+
+export const StepRecordSchema = z.object({
+  step: z.number().int().min(1),
+  action: z.string(),
+  target: z.string().optional(),
+  success: z.boolean(),
+  error: z.string().optional(),
+});
+export type StepRecord = z.infer<typeof StepRecordSchema>;
+
+// ─── Task Result ─────────────────────────────────────────────────────────────
+
+export const TaskResultSchema = z.object({
+  taskId: TaskIdSchema,
+  success: z.boolean(),
+  message: z.string().optional(),
+  totalSteps: z.number().int().min(0).optional(),
+  steps: z.array(StepRecordSchema).optional(),
+  failedAtStep: z.number().int().min(1).optional(),
+  finalScreenshot: z.string().optional(), // base64 PNG
+  duration: z.number().int().nonnegative().optional(), // ms
+});
+export type TaskResult = z.infer<typeof TaskResultSchema>;
+
+export const CancelResultSchema = z.object({
+  taskId: TaskIdSchema,
+  cancelled: z.literal(true),
+  stepsCompleted: z.number().int().min(0),
+});
+export type CancelResult = z.infer<typeof CancelResultSchema>;
+
+// ─── Mirror Channel ───────────────────────────────────────────────────────────
+
+export const DeviceStatusSchema = z.enum(['idle', 'busy', 'error']);
+export type DeviceStatus = z.infer<typeof DeviceStatusSchema>;
+
+export const MirrorSnapshotSchema = z.object({
+  type: z.enum(['snapshot', 'realtime']),
+  screenshot: z.string(), // base64 PNG
+  width: z.number().int().positive(),
+  height: z.number().int().positive(),
+  timestamp: TimestampSchema,
+  currentApp: z.string().optional(),
+  deviceStatus: DeviceStatusSchema,
+});
+export type MirrorSnapshot = z.infer<typeof MirrorSnapshotSchema>;
+
+export const MirrorClickParamsSchema = z.object({
+  x: z.number().int().nonnegative(),
+  y: z.number().int().nonnegative(),
+});
+export type MirrorClickParams = z.infer<typeof MirrorClickParamsSchema>;
+
+export const MirrorSwipeParamsSchema = z.object({
+  startX: z.number().int().nonnegative(),
+  startY: z.number().int().nonnegative(),
+  endX: z.number().int().nonnegative(),
+  endY: z.number().int().nonnegative(),
+});
+export type MirrorSwipeParams = z.infer<typeof MirrorSwipeParamsSchema>;
+
+export const MirrorTextParamsSchema = z.object({
+  text: z.string(),
+});
+export type MirrorTextParams = z.infer<typeof MirrorTextParamsSchema>;
+
+export const MirrorKeyParamsSchema = z.object({
+  key: z.enum(['back', 'home', 'recent']),
+});
+export type MirrorKeyParams = z.infer<typeof MirrorKeyParamsSchema>;
+
+// ─── Unified Message ─────────────────────────────────────────────────────────
+
+const RpcRequestSchema = z.object({
+  channel: ChannelSchema,
+  id: z.string().optional(),
+  method: z.string().optional(),
+  params: z.record(z.string(), z.unknown()).optional(),
+});
+export type RpcRequest = z.infer<typeof RpcRequestSchema>;
+
+const RpcResponseSchema = z.object({
+  channel: ChannelSchema,
+  id: z.string().optional(),
+  result: z.unknown(),
+  error: z.object({
+    code: z.string(),
+    message: z.string(),
+  }).optional(),
+});
+export type RpcResponse = z.infer<typeof RpcResponseSchema>;
+
+// ─── Device Info ─────────────────────────────────────────────────────────────
+
+export const DeviceInfoSchema = z.object({
+  deviceId: DeviceIdSchema,
+  model: z.string().optional(),
+  osVersion: z.number().optional(),
+  screenWidth: z.number().optional(),
+  screenHeight: z.number().optional(),
+  status: DeviceStatusSchema,
+  currentApp: z.string().optional(),
+  currentTaskId: TaskIdSchema.optional(),
+  connectedAt: TimestampSchema,
+  lastSeen: TimestampSchema,
+});
+export type DeviceInfo = z.infer<typeof DeviceInfoSchema>;
+
+// ─── Error Codes ─────────────────────────────────────────────────────────────
+
+export const DeviceErrorCodeSchema = z.enum([
+  'DEVICE_OFFLINE',
+  'PERMISSION_DENIED',
+  'TIMEOUT',
+  'INVALID_PARAMS',
+  'SHELL_DENIED',
+  'OPERATION_FAILED',
+  'DEVICE_NOT_FOUND',
+  'TASK_NOT_FOUND',
+  'TASK_ALREADY_RUNNING',
+  'MAX_DEVICES_REACHED',
+]);
+export type DeviceErrorCode = z.infer<typeof DeviceErrorCodeSchema>;
+
+// ─── Config ─────────────────────────────────────────────────────────────────
+
+export const PluginConfigSchema = z.object({
+  wsPort: z.number().int().min(1024).max(65535).default(18790),
+  authTokenLifetime: z.number().int().positive().default(86400),
+  maxDevices: z.number().int().positive().default(3),
+});
+export type PluginConfig = z.infer<typeof PluginConfigSchema>;

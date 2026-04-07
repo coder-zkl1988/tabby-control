@@ -1,0 +1,68 @@
+{
+  "name": "@youngclaw/openclaw-lobster-device-control",
+  "version": "1.0.0",
+  "description": "Remote Android device control plugin for OpenClaw. Manages WebSocket connections with LobsterAgent Android app and exposes device control as OpenClaw tools.",
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs",
+      "types": "./dist/index.d.ts"
+    },
+    "./protocol": {
+      "import": "./dist/protocol.js",
+      "types": "./dist/protocol.d.ts"
+    },
+    "./ws-server": {
+      "import": "./dist/ws-server.js",
+      "types": "./dist/ws-server.d.ts"
+    },
+    "./task-coordinator": {
+      "import": "./dist/task-coordinator.js",
+      "types": "./dist/task-coordinator.d.ts"
+    },
+    "./bridge": {
+      "import": "./dist/bridge.js",
+      "types": "./dist/bridge.d.ts"
+    }
+  },
+  "files": [
+    "dist",
+    "openclaw.plugin.json"
+  ],
+  "openclaw": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  },
+  "scripts": {
+    "build": "tsc --project tsconfig.build.json",
+    "build:watch": "tsc --project tsconfig.build.json --watch",
+    "typecheck": "tsc --noEmit",
+    "lint": "eslint src --max-warnings 0"
+  },
+  "keywords": [
+    "openclaw",
+    "openclaw-plugin",
+    "android",
+    "device-control",
+    "websocket"
+  ],
+  "license": "MIT",
+  "peerDependencies": {
+    "openclaw": ">=2026.3.22"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/ws": "^8.5.10",
+    "eslint": "^9.0.0",
+    "typescript": "^5.7.0"
+  },
+  "dependencies": {
+    "ws": "^8.18.0",
+    "zod": "^3.23.8"
+  }
+}
