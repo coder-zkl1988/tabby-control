@@ -23,7 +23,6 @@ import type {
   MirrorKeyParams,
 } from './protocol.js';
 import {
-  AuthMessageSchema,
   MirrorSnapshotSchema,
 } from './protocol.js';
 
@@ -186,10 +185,14 @@ export class WsServer {
    */
   attachToServer(server: HTTPServer): void {
     server.on('upgrade', (req, socket, head) => {
+      console.log(`[lobster-device-control] TCP upgrade: url=${req.url}, remote=${req.socket.remoteAddress}`);
       if (req.url === '/phone') {
         this.wss.handleUpgrade(req, socket as never, head, (ws) => {
           this.wss.emit('connection', ws, req);
         });
+      } else {
+        console.log(`[lobster-device-control] upgrade rejected: url=${req.url} != /phone`);
+        socket.destroy();
       }
     });
   }
@@ -227,29 +230,31 @@ export class WsServer {
 
     ws.on('message', (data) => {
       try {
-        const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+        const raw = data.toString();
+        console.log(`[lobster-device-control] ws message received: ${raw}`);
+        const msg = JSON.parse(raw) as Record<string, unknown>;
 
-        // ── Auth phase ────────────────────────────────────────────────────────
+        // ── Auth phase — no token required, just deviceId ─────────────────────
         if (!authed) {
-          const result = AuthMessageSchema.safeParse(msg);
-          if (!result.success || result.data.token !== this.authToken) {
-            ws.send(JSON.stringify({ type: 'error', code: 'AUTH_FAILED' }));
+          // Accept any message with a deviceId — no token check
+          console.log(`[lobster-device-control] auth phase, msg keys: ${Object.keys(msg).join(',')}`);
+          const deviceIdCandidate = (msg.deviceId ?? (msg as Record<string, unknown>).device_id) as string | undefined;
+          const capabilities = (msg.capabilities ?? (msg as Record<string, unknown>).capabilities) as DeviceCapabilities | undefined;
+          if (!deviceIdCandidate) {
+            ws.send(JSON.stringify({ type: 'error', code: 'AUTH_FAILED', message: 'deviceId required' }));
             ws.close(4003, 'auth failed');
-            return;
-          }
-          if (Date.now() > this.authTokenExpiresAt) {
-            ws.send(JSON.stringify({ type: 'error', code: 'TOKEN_EXPIRED' }));
-            ws.close(4004, 'token expired');
+            console.log(`[lobster-device-control] auth failed: no deviceId in msg`);
             return;
           }
 
           clearTimeout(authTimeout);
-          deviceId = result.data.deviceId;
+          deviceId = deviceIdCandidate;
           authed = true;
 
-          const session = this.registry.register(deviceId!, ws, result.data.capabilities);
+          const session = this.registry.register(deviceId, ws, capabilities);
           ws.send(JSON.stringify({ type: 'connected', serverSessionId: deviceId }));
           this.ipcNotifier('device:connected', session.info);
+          console.log(`[lobster-device-control] device connected: ${deviceId}`);
           return;
         }
 
@@ -274,11 +279,12 @@ export class WsServer {
       if (deviceId) {
         this.registry.remove(deviceId);
         this.ipcNotifier('device:disconnected', { deviceId });
+        console.log(`[lobster-device-control] device disconnected: ${deviceId}`);
       }
     });
 
     ws.on('error', (err) => {
-      console.warn('[lobster-device-control] WS error:', err.message);
+      console.warn(`[lobster-device-control] WS error (deviceId=${deviceId}): ${err.message}`);
     });
   }
 

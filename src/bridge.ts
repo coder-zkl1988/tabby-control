@@ -50,9 +50,9 @@ export class BridgeClient {
         signal: controller.signal,
       });
 
-      const text = await response.text();
-      if (!response.ok) {
-        throw new Error(`Bridge HTTP ${response.status}: ${text.trim() || response.statusText}`);
+      const text = await (response as Response).text();
+      if (!(response as Response).ok) {
+        throw new Error(`Bridge HTTP ${(response as Response).status}: ${text.trim() || (response as Response).statusText}`);
       }
 
       const parsed = JSON.parse(text) as RpcResponse;
@@ -72,7 +72,7 @@ export class BridgeClient {
       const timer = setTimeout(() => controller.abort(), 2000);
       const response = await fetch(`${this.baseUrl}/health`, { signal: controller.signal });
       clearTimeout(timer);
-      return response.ok;
+      return (response as Response).ok;
     } catch {
       return false;
     }

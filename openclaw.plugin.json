@@ -1,6 +1,5 @@
 {
   "id": "lobster-device-control",
-  "id": "lobster-device-control",
   "name": "LobsterDeviceControl",
   "description": "通过 WebSocket 控制 Android 设备。OpenClaw 下发自然语言任务，手机端自主执行。",
   "configSchema": {
@@ -20,7 +19,7 @@
       "maxDevices": {
         "type": "number",
         "description": "最大同时连接设备数。",
-        "default": 3
+        "default": 10
       }
     }
   }

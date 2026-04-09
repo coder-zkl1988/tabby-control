@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls /Users/zongkelong/.openclaw/extensions/lobster-device-control/tsconfig*.json)",
+      "Bash(pnpm build:*)",
+      "Bash(curl -s http://localhost:18791/health)",
+      "Bash(ps:*)",
+      "Bash(lsof -i :1879[0-9])",
+      "Bash(curl -s http://localhost:18801/health)",
+      "Bash(curl -s http://localhost:18801/devices)",
+      "Bash(curl -s http://localhost:18801/pairing-token)",
+      "Bash(curl -sv --max-time 3 http://localhost:18800/phone)",
+      "Bash(npm list:*)",
+      "Bash(node:*)",
+      "Bash(python3 -m json.tool)",
+      "Bash(cat /Users/zongkelong/workspace/openclaw/node_modules/.pnpm/openclaw@2026.3.1_@napi-rs+canvas@0.1.95_@types+express@5_*/node_modules/openclaw/extensions/feishu/openclaw.plugin.json)",
+      "Bash(curl -s \"https://registry.npmjs.org/@youngclaw/lobster-device-control\")",
+      "Bash(ls:*)"
+    ]
+  }
+}

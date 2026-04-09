@@ -6,7 +6,7 @@
  * WsServer / TaskCoordinator running in the Electron main process.
  */
 
-import type { BridgeClient } from './bridge.js';
+import type { DeviceBridge } from './protocol.js';
 import type { DeviceInfo, TaskResult } from './protocol.js';
 
 // ─── Tool factory helpers ─────────────────────────────────────────────────────
@@ -59,7 +59,7 @@ function formatBatchResults(results: Record<string, TaskResult>): string {
 
 // ─── Tool definitions ─────────────────────────────────────────────────────────
 
-export function createDeviceListTool(client: BridgeClient) {
+export function createDeviceListTool(client: DeviceBridge) {
   return {
     name: 'device:list',
     label: 'List Connected Devices',
@@ -81,7 +81,7 @@ export function createDeviceListTool(client: BridgeClient) {
   };
 }
 
-export function createExecuteTaskTool(client: BridgeClient) {
+export function createExecuteTaskTool(client: DeviceBridge) {
   return {
     name: 'device:execute_task',
     label: 'Execute Task on Device',
@@ -133,7 +133,7 @@ export function createExecuteTaskTool(client: BridgeClient) {
   };
 }
 
-export function createExecuteTaskAllTool(client: BridgeClient) {
+export function createExecuteTaskAllTool(client: DeviceBridge) {
   return {
     name: 'device:execute_task_all',
     label: 'Execute Task on All Idle Devices',
@@ -181,7 +181,7 @@ export function createExecuteTaskAllTool(client: BridgeClient) {
   };
 }
 
-export function createExecuteBatchTool(client: BridgeClient) {
+export function createExecuteBatchTool(client: DeviceBridge) {
   return {
     name: 'device:execute_batch',
     label: 'Execute Different Tasks on Multiple Devices',
@@ -243,7 +243,7 @@ export function createExecuteBatchTool(client: BridgeClient) {
   };
 }
 
-export function createCancelTaskTool(client: BridgeClient) {
+export function createCancelTaskTool(client: DeviceBridge) {
   return {
     name: 'device:cancel_task',
     label: 'Cancel Running Task',
@@ -286,7 +286,7 @@ export function createCancelTaskTool(client: BridgeClient) {
   };
 }
 
-export function createGetStatusTool(client: BridgeClient) {
+export function createGetStatusTool(client: DeviceBridge) {
   return {
     name: 'device:get_status',
     label: 'Get Device Detailed Status',

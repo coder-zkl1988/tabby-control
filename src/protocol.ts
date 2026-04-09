@@ -218,3 +218,18 @@ export const PluginConfigSchema = z.object({
   maxDevices: z.number().int().positive().default(3),
 });
 export type PluginConfig = z.infer<typeof PluginConfigSchema>;
+
+// ─── DeviceBridge interface ──────────────────────────────────────────────────────
+//
+// Shared interface for both BridgeClient (HTTP) and InProcessBridge (direct call).
+// Used by tools.ts to work with either bridge implementation.
+
+export interface DeviceBridge {
+  ping(): Promise<boolean>;
+  listDevices(): Promise<DeviceInfo[]>;
+  executeTask(deviceId: string, task: string, timeoutMs?: number): Promise<TaskResult>;
+  executeTaskAll(task: string, timeoutMs?: number): Promise<Record<string, TaskResult>>;
+  executeBatch(tasks: Array<{ deviceId: string; task: string }>, timeoutMs?: number): Promise<Record<string, TaskResult>>;
+  cancelTask(deviceId: string, taskId: string): Promise<void>;
+  getStatus(deviceId: string): Promise<DeviceInfo | null>;
+}
