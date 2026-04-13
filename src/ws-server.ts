@@ -39,6 +39,30 @@ export interface DeviceSession {
 
 type DeviceChangeCallback = (devices: DeviceInfo[]) => void;
 
+// ── Human-readable unit conversion helpers ─────────────────────────────────────
+
+/** Convert bytes to human-readable string (KB/MB/GB/TB) */
+function formatBytes(bytes: number | undefined): string | undefined {
+  if (bytes == null || bytes <= 0) return undefined;
+  if (bytes >= 1e12) return `${(bytes / 1e12).toFixed(2)} TB`;
+  if (bytes >= 1e9)  return `${(bytes / 1e9).toFixed(2)} GB`;
+  if (bytes >= 1e6)  return `${(bytes / 1e6).toFixed(2)} MB`;
+  return `${(bytes / 1e3).toFixed(2)} KB`;
+}
+
+/** Convert Android SDK version number to "Android XX" string */
+function formatOsVersion(v: number | string | undefined): string | undefined {
+  if (v == null) return undefined;
+  if (typeof v === 'string') return v; // already formatted
+  // Android version map: 35=Android 15, 36=Android 16, etc.
+  const map: Record<number, string> = {
+    29: 'Android 10', 30: 'Android 11', 31: 'Android 12',
+    32: 'Android 12L', 33: 'Android 13', 34: 'Android 14',
+    35: 'Android 15', 36: 'Android 16',
+  };
+  return map[v] ?? `Android ${v - 9}`; // fallback: v - 9 as rough estimate
+}
+
 export class DeviceRegistry {
   private devices = new Map<string, DeviceSession>();
   private changeCallbacks: DeviceChangeCallback[] = [];
@@ -51,14 +75,24 @@ export class DeviceRegistry {
       info: {
         deviceId,
         model: capabilities?.model,
-        osVersion: capabilities?.osVersion,
+        osVersion: formatOsVersion(capabilities?.osVersion),
         screenWidth: capabilities?.screenWidth,
         screenHeight: capabilities?.screenHeight,
         status: 'idle',
-        currentApp: undefined,
+        currentApp: capabilities?.currentApp,
         currentTaskId: undefined,
         connectedAt: now,
         lastSeen: now,
+        manufacturer: capabilities?.manufacturer,
+        batteryLevel: capabilities?.batteryLevel,
+        batteryStatus: capabilities?.batteryStatus,
+        isCharging: capabilities?.isCharging,
+        totalRam: formatBytes(capabilities?.totalRam),
+        availableRam: formatBytes(capabilities?.availableRam),
+        totalStorage: formatBytes(capabilities?.totalStorage),
+        availableStorage: formatBytes(capabilities?.availableStorage),
+        wifiSsid: capabilities?.wifiSsid,
+        isWifiConnected: capabilities?.isWifiConnected,
       },
     };
     this.devices.set(deviceId, session);
@@ -81,7 +115,16 @@ export class DeviceRegistry {
   updateStatus(deviceId: string, patch: Partial<DeviceInfo>): void {
     const s = this.devices.get(deviceId);
     if (!s) return;
-    s.info = { ...s.info, ...patch, lastSeen: Date.now() };
+    // Apply unit conversions for fields that arrive as raw numbers
+    const converted: Partial<DeviceInfo> = {
+      ...patch,
+      osVersion: formatOsVersion(patch.osVersion as number | string | undefined),
+      totalRam: formatBytes(patch.totalRam as number | undefined),
+      availableRam: formatBytes(patch.availableRam as number | undefined),
+      totalStorage: formatBytes(patch.totalStorage as number | undefined),
+      availableStorage: formatBytes(patch.availableStorage as number | undefined),
+    };
+    s.info = { ...s.info, ...converted, lastSeen: Date.now() };
     this.notifyChange();
   }
 
@@ -136,6 +179,8 @@ export class WsServer {
   private authToken = '';
   private authTokenExpiresAt = 0;
   private mirrorHandler?: MirrorHandler;
+  /** Direct handler for task messages — called synchronously when a phone sends a task response */
+  private taskMessageHandler?: (deviceId: string, message: Record<string, unknown>) => void;
 
   constructor(
     private port: number,
@@ -148,6 +193,10 @@ export class WsServer {
 
   // ─── Public API ─────────────────────────────────────────────────────────────
 
+  /**
+   * Register a handler that is called directly (in-process) when a task message
+   * arrives from a phone. This avoids IPC overhead in standalone mode.
+   */
   generatePairingToken(tokenLifetimeSec: number): string {
     const token = Array.from({ length: 32 }, () =>
       Math.floor(Math.random() * 16).toString(16),
@@ -157,8 +206,8 @@ export class WsServer {
     return token;
   }
 
-  getPairingInfo(): { token: string; expiresAt: number; port: number } {
-    return { token: this.authToken, expiresAt: this.authTokenExpiresAt, port: this.port };
+  setTaskMessageHandler(handler: (deviceId: string, message: Record<string, unknown>) => void): void {
+    this.taskMessageHandler = handler;
   }
 
   getRegistry(): DeviceRegistry {
@@ -174,8 +223,13 @@ export class WsServer {
    */
   sendToDevice(deviceId: string, message: object): boolean {
     const session = this.registry.get(deviceId);
-    if (!session || session.ws.readyState !== WebSocket.OPEN) return false;
-    session.ws.send(JSON.stringify(message));
+    if (!session || session.ws.readyState !== WebSocket.OPEN) {
+      console.log(`[lobster-device-control] sendToDevice(${deviceId}) SKIPPED - not connected`);
+      return false;
+    }
+    const json = JSON.stringify(message);
+    console.log(`[lobster-device-control] >>> WS_SEND >>> deviceId=${deviceId} raw=${json}`);
+    session.ws.send(json);
     return true;
   }
 
@@ -262,8 +316,13 @@ export class WsServer {
         const channel = msg.channel as string;
 
         if (channel === 'task') {
-          // Forward to main-process task coordinator via IPC
-          this.ipcNotifier('device:task_message', { deviceId, message: msg });
+          // In standalone mode: call taskMessageHandler directly (same process, no IPC needed)
+          if (this.taskMessageHandler) {
+            this.taskMessageHandler(deviceId!, msg);
+          } else {
+            // Fall back to IPC for Electron main process
+            this.ipcNotifier('device:task_message', { deviceId, message: msg });
+          }
         } else if (channel === 'mirror') {
           this.handleMirrorMessage(deviceId!, msg);
         } else if (channel === 'control') {

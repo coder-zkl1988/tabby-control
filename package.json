@@ -1,6 +1,6 @@
 {
   "name": "@youngclaw/lobster-device-control",
-  "version": "1.0.0",
+  "version": "2026.3.2",
   "description": "Remote Android device control plugin for OpenClaw. Manages WebSocket connections with LobsterAgent Android app and exposes device control as OpenClaw tools.",
   "type": "module",
   "main": "./dist/index.js",
@@ -52,9 +52,6 @@
     "websocket"
   ],
   "license": "MIT",
-  "peerDependencies": {
-    "openclaw": ">=2026.3.22"
-  },
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.10",

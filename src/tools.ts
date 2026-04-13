@@ -17,34 +17,51 @@ function formatDevices(devices: DeviceInfo[]): string {
   }
   const lines = devices.map(d => {
     const parts = [
-      d.model ?? d.deviceId,
+      d.manufacturer ?? d.model ?? d.deviceId,
+      d.model ? `(${d.model})` : '',
       `status=${d.status}`,
       d.currentApp ? `app=${d.currentApp}` : '',
       d.screenWidth ? `screen=${d.screenWidth}x${d.screenHeight}` : '',
-      d.osVersion ? `Android ${d.osVersion}` : '',
+      d.osVersion ?? '',
+      d.batteryLevel != null ? `🔋${d.batteryLevel}%` : '',
+      d.isCharging ? '⚡' : '',
+      d.wifiSsid ? `📶${d.wifiSsid}` : '',
     ].filter(Boolean);
     return `  - [${d.deviceId}] ${parts.join(' | ')}`;
   });
-  return `Connected devices:\n${lines.join('\n')}`;
+  return `📱 Connected devices (${devices.length}):\n${lines.join('\n')}`;
 }
 
 function formatTaskResult(result: TaskResult, deviceId: string): string {
+  const sections: string[] = [];
+
   if (result.success) {
-    const lines = [`Task completed successfully: ${result.message ?? 'Done'}`];
-    if (result.totalSteps !== undefined) lines.push(`Total steps: ${result.totalSteps}`);
-    if (result.duration !== undefined) lines.push(`Duration: ${(result.duration / 1000).toFixed(1)}s`);
+    sections.push(`✅ Task completed`);
+    if (result.message) sections.push(result.message);
+    if (result.totalSteps !== undefined) sections.push(`Steps: ${result.totalSteps}`);
+    if (result.duration !== undefined) sections.push(`Duration: ${(result.duration / 1000).toFixed(1)}s`);
     if (result.steps?.length) {
-      lines.push('Steps:');
       for (const s of result.steps) {
-        lines.push(`  ${s.step}. [${s.success ? '✅' : '❌'}] ${s.action}${s.target ? ` → ${s.target}` : ''}`);
+        sections.push(`${s.step}. [${s.success ? '✅' : '❌'}] ${s.action}${s.target ? ` → ${s.target}` : ''}`);
       }
     }
-    return lines.join('\n');
   } else {
-    const lines = [`Task failed: ${result.message ?? 'Unknown error'}`];
-    if (result.failedAtStep !== undefined) lines.push(`Failed at step ${result.failedAtStep}`);
-    return lines.join('\n');
+    sections.push(`❌ Task failed: ${result.message ?? 'Unknown error'}`);
+    if (result.failedAtStep !== undefined) sections.push(`Failed at step ${result.failedAtStep}`);
   }
+
+  // Append final screenshot as file path (plugin saved it to taskData directory)
+  if (result.finalScreenshot) {
+    const isFilePath = result.finalScreenshot.startsWith('/');
+    if (isFilePath) {
+      sections.push(`\n📸 Final screenshot saved to: ${result.finalScreenshot}`);
+    } else {
+      // Fallback: inline base64 (should not reach here normally)
+      sections.push(`\n📸 Final screenshot:\n![final screenshot](data:image/png;base64,${result.finalScreenshot})`);
+    }
+  }
+
+  return sections.join('\n');
 }
 
 function formatBatchResults(results: Record<string, TaskResult>): string {
@@ -89,8 +106,17 @@ export function createExecuteTaskTool(client: DeviceBridge) {
       'Send a natural language task to a connected Android device. The device runs its own',
       'autonomous agent loop (screenshot → vision model → action → repeat) and returns a',
       'structured result when done.',
-      'Examples: "打开微信给张三发消息：今晚吃饭吗", "在小红书搜索美食并截图", "打开设置查看存储空间"',
-    ].join(' '),
+      '',
+      'IMPORTANT: Send the ENTIRE task to the device in one call. Do NOT split the task',
+      'into sub-steps yourself. The device handles all steps autonomously. For example,',
+      'if the user says "open WeChat and send a message to Zhang San", send the full',
+      'task "打开微信给张三发消息：今晚吃饭吗" in one device:execute_task call.',
+      '',
+      'Examples:',
+      '- "打开小红书，浏览首页前三屏内容" (NOT split into "open app" + "scroll" + "report")',
+      '- "打开微信给张三发消息：今晚吃饭吗"',
+      '- "在小红书搜索美食并截图"',
+    ].join('\n'),
     parameters: {
       type: 'object',
       properties: {

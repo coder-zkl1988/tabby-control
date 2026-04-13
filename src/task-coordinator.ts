@@ -10,6 +10,10 @@
  *   → resolves pending Promise → tool returns result
  */
 
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+import { homedir } from 'os';
+import fs from 'fs';
 import type { WsServer } from './ws-server.js';
 import type {
   TaskId,
@@ -22,6 +26,11 @@ import {
   TaskResultSchema,
   TaskIdSchema,
 } from './protocol.js';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = dirname(__filename);
+// Screenshots go under ~/.openclaw/media/ which is whitelisted for Feishu media sending
+const SCREENSHOT_DIR = join(homedir(), '.openclaw', 'media', 'lobster-screenshots');
 
 // ─── Pending Request ──────────────────────────────────────────────────────────
 
@@ -58,6 +67,11 @@ export class TaskCoordinator {
     ipcNotifier: (channel: string, data: unknown) => void,
   ) {
     this.wsServer = wsServer;
+    // Ensure taskData directory exists
+    if (!fs.existsSync(SCREENSHOT_DIR)) {
+      fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
+      console.log(`[lobster-device-control] Created screenshot dir: ${SCREENSHOT_DIR}`);
+    }
     this.ipcNotifier = ipcNotifier;
   }
 
@@ -86,6 +100,8 @@ export class TaskCoordinator {
     });
     this.ipcNotifier('device:status_change', { deviceId, status: 'busy', taskId });
 
+    console.log(`[lobster-device-control] >>> EXECUTE_TASK >>> taskId=${taskId} deviceId=${deviceId} task="${task}" timeoutMs=${timeoutMs}`);
+
     const sent = this.wsServer.sendToDevice(deviceId, {
       channel: 'task',
       id: taskId,
@@ -94,6 +110,7 @@ export class TaskCoordinator {
     });
 
     if (!sent) {
+      console.log(`[lobster-device-control] >>> EXECUTE_TASK >>> FAILED - device offline or not found, deviceId=${deviceId}`);
       this.wsServer.getRegistry().updateStatus(deviceId, {
         status: 'idle',
         currentTaskId: undefined,
@@ -202,26 +219,59 @@ export class TaskCoordinator {
     };
   }
 
+  // ─── Screenshot file enrichment ─────────────────────────────────────────────
+
+  /**
+   * Decode base64 screenshot and save to taskData directory.
+   * Replace the base64 string with the file path in the result.
+   * Phone sends WebP-compressed JPEG data, saved as .webp for correct format.
+   */
+  private enrichResultWithScreenshot(taskResult: TaskResult): TaskResult {
+    if (!taskResult.finalScreenshot) return taskResult;
+
+    try {
+      const filePath = join(SCREENSHOT_DIR, `${taskResult.taskId}.webp`);
+      // Decode base64 and write WebP file
+      const buffer = Buffer.from(taskResult.finalScreenshot, 'base64');
+      fs.writeFileSync(filePath, buffer);
+      console.log(`[lobster-device-control] Screenshot saved: ${filePath} (${buffer.length} bytes)`);
+      // Return result with file path instead of base64
+      return { ...taskResult, finalScreenshot: filePath };
+    } catch (err) {
+      console.warn(`[lobster-device-control] Failed to save screenshot: ${err}`);
+      return taskResult; // Fallback: return original result with base64
+    }
+  }
+
   // ─── IPC Handler ────────────────────────────────────────────────────────────
   //
   // Called by the Electron main process IPC handler when a 'task' message
   // arrives from a phone via the WebSocket server.
 
   handleTaskMessage(deviceId: string, message: Record<string, unknown>): void {
+    console.log(`[lobster-device-control] handleTaskMessage: deviceId=${deviceId}, id=${message.id}, hasResult=${!!message.result}, method=${message.method}`);
+
     // ── Result ────────────────────────────────────────────────────────────────
     if (message.result) {
       const result = message.result as Record<string, unknown>;
-      const taskId = (message.id as string) || (result.taskId as string);
+      // message.id is "resp_<taskId>" but pending map key is the raw taskId — strip prefix
+      const rawId = (message.id as string) || (result.taskId as string);
+      const taskId = rawId?.startsWith('resp_') ? rawId.slice(5) : rawId;
+      console.log(`[lobster-device-control] RESULT: rawId=${rawId}, taskId=${taskId}, pendingKeys=${[...this.pending.keys()].join(',')}`);
+
       if (!taskId) return;
 
       const pending = this.pending.get(taskId as TaskId);
+      console.log(`[lobster-device-control] pending.get(${taskId}) = ${pending ? 'FOUND' : 'NOT FOUND'}`);
       if (pending) {
         clearTimeout(pending.timeout);
         this.pending.delete(taskId as TaskId);
 
         const parsed = TaskResultSchema.safeParse(result);
         if (parsed.success) {
-          pending.resolve(parsed.data);
+          // Replace base64 screenshot with file path
+          const enriched = this.enrichResultWithScreenshot(parsed.data);
+          pending.resolve(enriched);
         } else {
           pending.reject(new Error(`Invalid result from device: ${JSON.stringify(result)}`));
         }

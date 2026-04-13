@@ -22,9 +22,20 @@ export type Timestamp = z.infer<typeof TimestampSchema>;
 
 export const DeviceCapabilitiesSchema = z.object({
   model: z.string().optional(),
-  osVersion: z.number().optional(),
+  osVersion: z.union([z.number(), z.string()]).optional(), // number=SDK, string="Android XX"
   screenWidth: z.number().optional(),
   screenHeight: z.number().optional(),
+  manufacturer: z.string().optional(),
+  currentApp: z.string().optional(),
+  batteryLevel: z.number().optional(),      // 0-100
+  batteryStatus: z.string().optional(),     // "charging" | "discharging" | "full" | "unknown"
+  totalRam: z.number().optional(),           // bytes
+  availableRam: z.number().optional(),      // bytes
+  totalStorage: z.number().optional(),      // bytes
+  availableStorage: z.number().optional(),  // bytes
+  wifiSsid: z.string().optional(),
+  isWifiConnected: z.boolean().optional(),
+  isCharging: z.boolean().optional(),
 });
 export type DeviceCapabilities = z.infer<typeof DeviceCapabilitiesSchema>;
 
@@ -183,7 +194,7 @@ export type RpcResponse = z.infer<typeof RpcResponseSchema>;
 export const DeviceInfoSchema = z.object({
   deviceId: DeviceIdSchema,
   model: z.string().optional(),
-  osVersion: z.number().optional(),
+  osVersion: z.union([z.number(), z.string()]).optional(), // number=SDK, string="Android XX"
   screenWidth: z.number().optional(),
   screenHeight: z.number().optional(),
   status: DeviceStatusSchema,
@@ -191,6 +202,16 @@ export const DeviceInfoSchema = z.object({
   currentTaskId: TaskIdSchema.optional(),
   connectedAt: TimestampSchema,
   lastSeen: TimestampSchema,
+  manufacturer: z.string().optional(),
+  batteryLevel: z.number().optional(),
+  batteryStatus: z.string().optional(),
+  totalRam: z.union([z.number(), z.string()]).optional(),    // bytes | "X.XX GB"
+  availableRam: z.union([z.number(), z.string()]).optional(), // bytes | "X.XX GB"
+  totalStorage: z.union([z.number(), z.string()]).optional(),    // bytes | "XXX GB"
+  availableStorage: z.union([z.number(), z.string()]).optional(), // bytes | "XXX GB"
+  wifiSsid: z.string().optional(),
+  isWifiConnected: z.boolean().optional(),
+  isCharging: z.boolean().optional(),
 });
 export type DeviceInfo = z.infer<typeof DeviceInfoSchema>;
 

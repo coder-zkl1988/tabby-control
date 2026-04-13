@@ -248,28 +248,31 @@ export default {
 
     // ── IPC notifier (in-process, no Electron IPC) ─────────────────────────────
     const ipcNotifier = (channel: string, data: unknown) => {
-      logger.debug(`[lobster-device-control] IPC: ${channel} ${JSON.stringify(data)}`);
+      logger.debug(`[lobster-device-control] IPC: ${channel}`);
     };
 
-    // ── Start WebSocket server ────────────────────────────────────────────────
+    // ── Create shared HTTP server for WebSocket upgrade and HTTP RPC ─────────────
     const wsServer = new WsServer(config.wsPort, ipcNotifier);
-
-    // Create HTTP server and attach WS upgrade handler
     const httpServer = createServer();
     wsServer.attachToServer(httpServer);
 
-    // Start WS server
+    // ── Start WebSocket/WS server on port 18800 ─────────────────────────────────
     httpServer.listen(config.wsPort, '0.0.0.0', () => {
       logger.info(
         `[lobster-device-control] WebSocket server listening on ws://0.0.0.0:${config.wsPort}/phone`,
       );
-      logger.info(
-        `[lobster-device-control] No authentication required — any device on the network can connect.`,
-      );
+    });
+    httpServer.on('error', (err) => {
+      logger.error(`[lobster-device-control] HTTP server error on port ${config.wsPort}: ${err.message}`);
     });
 
     // ── Start TaskCoordinator ──────────────────────────────────────────────────
     const coordinator = new TaskCoordinator(wsServer, ipcNotifier);
+
+    // ── Wire task messages from phones → coordinator directly ──────────────────
+    // In standalone mode (same process), call handleTaskMessage directly instead of IPC.
+    // This ensures pending Promises get resolved when phone sends task results.
+    wsServer.setTaskMessageHandler(coordinator.handleTaskMessage.bind(coordinator));
 
     // Wire task messages from phones → coordinator
     wsServer.setMirrorHandler({
