@@ -11,6 +11,11 @@
         "description": "WebSocket 服务端口，监听手机连接。",
         "default": 18790
       },
+      "rpcPort": {
+        "type": "number",
+        "default": 18801,
+        "description": "HTTP RPC port for controller queries"
+      },
       "authTokenLifetime": {
         "type": "number",
         "description": "配对 Token 有效期（秒）。",
