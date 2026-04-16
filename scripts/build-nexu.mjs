@@ -5,6 +5,7 @@
  * that can be copied into Nexu's .dist-runtime/plugins/.
  *
  * Usage: node scripts/build-nexu.mjs
+ *   or:  pnpm build:nexu
  */
 import { cp, mkdir, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -22,12 +23,21 @@ console.log("[nexu-build] Assembling deployable directory...");
 await rm(OUTPUT_DIR, { recursive: true, force: true });
 await mkdir(OUTPUT_DIR, { recursive: true });
 
-for (const entry of ["dist", "node_modules", "openclaw.plugin.json", "package.json"]) {
+// Copy dist output, manifests, and lockfile
+for (const entry of ["dist", "openclaw.plugin.json", "package.json", "pnpm-lock.yaml"]) {
   await cp(
     path.join(PLUGIN_ROOT, entry),
     path.join(OUTPUT_DIR, entry),
-    { recursive: true, dereference: false, force: true }
+    { recursive: true, dereference: true, force: true }
   );
 }
+
+// Install production-only dependencies in the output directory
+// (avoids shipping devDependencies like eslint/typescript into the Nexu distributable)
+console.log("[nexu-build] Installing production dependencies...");
+execSync("pnpm install --prod --frozen-lockfile", {
+  cwd: OUTPUT_DIR,
+  stdio: "inherit",
+});
 
 console.log(`[nexu-build] Done → ${OUTPUT_DIR}`);

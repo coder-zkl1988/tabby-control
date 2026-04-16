@@ -41,6 +41,7 @@
   "scripts": {
     "build": "tsc --project tsconfig.build.json",
     "build:watch": "tsc --project tsconfig.build.json --watch",
+    "build:nexu": "node scripts/build-nexu.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --max-warnings 0"
   },
