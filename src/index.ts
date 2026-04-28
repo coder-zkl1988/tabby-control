@@ -1,17 +1,8 @@
 /**
  * lobster-device-control — OpenClaw plugin entry point
  *
- * Standalone mode: this plugin starts its own WebSocket server (phone connections)
- * and HTTP RPC bridge, without requiring the LobsterAI desktop app.
- *
- * Architecture:
- *   OpenClaw agent calls tool
- *   → direct in-process TaskRegistry / WsServer (no HTTP bridge needed)
- *   → tool returns result to agent
- *
- * Additionally starts:
- *   HTTP server on 18801 — REST RPC for OpenClaw tools
- *   WebSocket server on 18800 /phone — accepts phone connections
+ * Starts a WebSocket server for phone connections (on wsPort)
+ * and registers device control tools via the OpenClaw plugin API.
  */
 
 import { createServer, type Server as HTTPServer } from 'http';
@@ -31,7 +22,7 @@ import {
 
 const DEFAULT_CONFIG = {
   wsPort: 18800,
-  httpPort: 18801,
+  rpcPort: 18801,
 };
 
 // ─── OpenClaw plugin API types ─────────────────────────────────────────────────
@@ -61,15 +52,13 @@ interface OpenClawToolResult {
 interface OpenClawPluginApi {
   logger: OpenClawLogger;
   sessionKey?: string;
+  config?: Record<string, unknown>;
+  pluginConfig?: Record<string, unknown>;
   registerTool(factory: (ctx: { sessionKey?: string }) => OpenClawTool | null): void;
 }
 
-// ─── In-process bridge (replaces HTTP RPC) ─────────────────────────────────────
+// ─── In-process bridge ──────────────────────────────────────────────────────
 
-/**
- * InProcessBridge mimics BridgeClient's interface but calls TaskCoordinator directly.
- * This avoids HTTP overhead and removes the dependency on an external bridge server.
- */
 class InProcessBridge {
   constructor(
     private coordinator: TaskCoordinator,
@@ -117,11 +106,10 @@ function startHttpServer(
   port: number,
   coordinator: TaskCoordinator,
   bridge: InProcessBridge,
-  notifier: (channel: string, data: unknown) => void,
+  _notifier: (channel: string, data: unknown) => void,
   logger: OpenClawLogger,
 ): HTTPServer {
   const server = createServer(async (req, res) => {
-    // CORS headers for local dev
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -134,21 +122,12 @@ function startHttpServer(
 
     const url = new URL(req.url ?? '/', `http://localhost:${port}`);
 
-    // Health check
     if (url.pathname === '/health' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ status: 'ok', port }));
       return;
     }
 
-    // Token endpoint — no token required anymore
-    if (url.pathname === '/pairing-token' && req.method === 'GET') {
-      res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ token: null, message: 'no token required', port: DEFAULT_CONFIG.wsPort }));
-      return;
-    }
-
-    // Device list
     if (url.pathname === '/devices' && req.method === 'GET') {
       const devices = await bridge.listDevices();
       res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -156,7 +135,6 @@ function startHttpServer(
       return;
     }
 
-    // RPC endpoint
     if (url.pathname === '/rpc' && req.method === 'POST') {
       let body = '';
       req.on('data', chunk => { body += chunk; });
@@ -243,38 +221,41 @@ export default {
   },
 
   register(api: OpenClawPluginApi): void {
-    const config = { ...DEFAULT_CONFIG };
+    const pluginConfig = api.pluginConfig ?? {};
     const logger = api.logger;
+    logger.info(`[lobster-device-control] pluginConfig: ${JSON.stringify(pluginConfig)}`);
+    const config = {
+      wsPort: typeof pluginConfig.wsPort === 'number' ? pluginConfig.wsPort : DEFAULT_CONFIG.wsPort,
+      rpcPort: typeof pluginConfig.rpcPort === 'number' ? pluginConfig.rpcPort : DEFAULT_CONFIG.rpcPort,
+    };
 
-    // ── IPC notifier (in-process, no Electron IPC) ─────────────────────────────
     const ipcNotifier = (channel: string, data: unknown) => {
       logger.debug(`[lobster-device-control] IPC: ${channel}`);
     };
 
-    // ── Create shared HTTP server for WebSocket upgrade and HTTP RPC ─────────────
     const wsServer = new WsServer(config.wsPort, ipcNotifier);
-    const httpServer = createServer();
-    wsServer.attachToServer(httpServer);
 
-    // ── Start WebSocket/WS server on port 18800 ─────────────────────────────────
+    const httpServer = createServer((req, res) => {
+      if (req.url === '/health') {
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ status: 'ok', port: config.wsPort }));
+      } else {
+        res.writeHead(404);
+        res.end();
+      }
+    });
+    wsServer.attachToServer(httpServer);
     httpServer.listen(config.wsPort, '0.0.0.0', () => {
-      logger.info(
-        `[lobster-device-control] WebSocket server listening on ws://0.0.0.0:${config.wsPort}/phone`,
-      );
+      logger.info(`[lobster-device-control] WebSocket server listening on ws://0.0.0.0:${config.wsPort}/phone`);
     });
     httpServer.on('error', (err) => {
       logger.error(`[lobster-device-control] HTTP server error on port ${config.wsPort}: ${err.message}`);
     });
 
-    // ── Start TaskCoordinator ──────────────────────────────────────────────────
     const coordinator = new TaskCoordinator(wsServer, ipcNotifier);
 
-    // ── Wire task messages from phones → coordinator directly ──────────────────
-    // In standalone mode (same process), call handleTaskMessage directly instead of IPC.
-    // This ensures pending Promises get resolved when phone sends task results.
     wsServer.setTaskMessageHandler(coordinator.handleTaskMessage.bind(coordinator));
 
-    // Wire task messages from phones → coordinator
     wsServer.setMirrorHandler({
       onClick: (deviceId, params) => {
         logger.debug(`[lobster-device-control] mirror click ${deviceId}: ${JSON.stringify(params)}`);
@@ -290,13 +271,10 @@ export default {
       },
     });
 
-    // ── In-process bridge (replaces HTTP bridge client) ───────────────────────
     const bridge = new InProcessBridge(coordinator, wsServer.getRegistry(), ipcNotifier);
 
-    // ── Start HTTP RPC server ──────────────────────────────────────────────────
-    startHttpServer(config.httpPort, coordinator, bridge, ipcNotifier, logger);
+    startHttpServer(config.rpcPort, coordinator, bridge, ipcNotifier, logger);
 
-    // ── Register OpenClaw tools ───────────────────────────────────────────────
     function makeTool(factory: (bridge: InProcessBridge) => OpenClawTool) {
       return (): OpenClawTool => {
         const tool = factory(bridge);
@@ -314,10 +292,7 @@ export default {
 
     logger.info(
       `[lobster-device-control] registered 6 device control tools. ` +
-      `WebSocket on ws://0.0.0.0:${config.wsPort}/phone`,
-    );
-    logger.info(
-      `[lobster-device-control] HTTP RPC on http://0.0.0.0:${config.httpPort}`,
+      `WebSocket on ws://0.0.0.0:${config.wsPort}/phone, Mirror on ws://0.0.0.0:${config.wsPort}/mirror`,
     );
   },
 };

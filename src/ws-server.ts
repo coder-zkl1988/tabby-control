@@ -12,7 +12,7 @@
  */
 
 import WebSocket, { WebSocketServer as WSServer } from 'ws';
-import type { Server as HTTPServer } from 'http';
+import { type Server as HTTPServer } from 'http';
 import type {
   DeviceInfo,
   DeviceCapabilities,
@@ -65,6 +65,7 @@ function formatOsVersion(v: number | string | undefined): string | undefined {
 
 export class DeviceRegistry {
   private devices = new Map<string, DeviceSession>();
+  private mirrorForwarders = new Map<string, Set<WebSocket>>();
   private changeCallbacks: DeviceChangeCallback[] = [];
 
   register(deviceId: string, ws: WebSocket, capabilities?: DeviceCapabilities): DeviceSession {
@@ -139,6 +140,13 @@ export class DeviceRegistry {
       lastSeen: snapshot.timestamp,
     };
     this.notifyChange();
+
+    const payload = JSON.stringify({ channel: 'mirror', ...snapshot });
+    for (const ws of this.mirrorForwarders.get(deviceId) ?? []) {
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(payload);
+      }
+    }
   }
 
   remove(deviceId: string): void {
@@ -152,6 +160,21 @@ export class DeviceRegistry {
     return () => {
       this.changeCallbacks = this.changeCallbacks.filter(cb => cb !== callback);
     };
+  }
+
+  addMirrorForwarder(deviceId: string, ws: WebSocket): void {
+    if (!this.mirrorForwarders.has(deviceId)) {
+      this.mirrorForwarders.set(deviceId, new Set());
+    }
+    this.mirrorForwarders.get(deviceId)!.add(ws);
+  }
+
+  removeMirrorForwarder(deviceId: string, ws: WebSocket): void {
+    this.mirrorForwarders.get(deviceId)?.delete(ws);
+  }
+
+  getMirrorForwarders(deviceId: string): Set<WebSocket> {
+    return this.mirrorForwarders.get(deviceId) ?? new Set();
   }
 
   private notifyChange(): void {
@@ -174,7 +197,8 @@ export interface MirrorHandler {
 // ─── WsServer ────────────────────────────────────────────────────────────────
 
 export class WsServer {
-  private wss: InstanceType<typeof WSServer>;
+  readonly wss: InstanceType<typeof WSServer>;
+  readonly mirrorWss: InstanceType<typeof WSServer>;
   private registry: DeviceRegistry;
   private authToken = '';
   private authTokenExpiresAt = 0;
@@ -188,7 +212,9 @@ export class WsServer {
   ) {
     this.registry = new DeviceRegistry();
     this.wss = new WSServer({ noServer: true });
+    this.mirrorWss = new WSServer({ noServer: true });
     this.wss.on('connection', this.handleConnection.bind(this));
+    this.mirrorWss.on('connection', this.handleMirrorConnection.bind(this));
   }
 
   // ─── Public API ─────────────────────────────────────────────────────────────
@@ -233,20 +259,45 @@ export class WsServer {
     return true;
   }
 
-  /**
-   * Attach to an existing HTTP server (used by Electron main process).
-   * Handles upgrade requests at the `/phone` path.
+/**
+   * Attach WebSocket upgrade handler to the OpenClaw gateway HTTP server.
+   * Uses prependListener so our handler runs before OpenClaw's own
+   * upgrade handler. After a successful upgrade, OpenClaw's handler would
+   * destroy the socket, so we neuter socket.end/destroy between our
+   * handleUpgrade call and the connection callback.
    */
   attachToServer(server: HTTPServer): void {
-    server.on('upgrade', (req, socket, head) => {
-      console.log(`[lobster-device-control] TCP upgrade: url=${req.url}, remote=${req.socket.remoteAddress}`);
-      if (req.url === '/phone') {
+    server.prependListener('upgrade', (req, socket, head) => {
+      const url = req.url ?? '/';
+      console.log(`[lobster-device-control] TCP upgrade: url=${JSON.stringify(url)}, phone=${url === '/phone'}, mirror=${url === '/mirror'}, remote=${req.socket.remoteAddress}`);
+      if (url === '/phone') {
+        const origEnd = socket.end.bind(socket);
+        const origDestroy = socket.destroy.bind(socket);
+        socket.end = () => socket;
+        socket.destroy = () => socket as never;
         this.wss.handleUpgrade(req, socket as never, head, (ws) => {
+          socket.end = origEnd;
+          socket.destroy = origDestroy;
           this.wss.emit('connection', ws, req);
         });
-      } else {
-        console.log(`[lobster-device-control] upgrade rejected: url=${req.url} != /phone`);
-        socket.destroy();
+      } else if (req.url === '/mirror') {
+        const origEnd = socket.end.bind(socket);
+        const origDestroy = socket.destroy.bind(socket);
+        const origWrite = socket.write.bind(socket);
+        socket.end = () => socket;
+        socket.destroy = () => socket as never;
+        socket.write = ((data: unknown, ...args: unknown[]) => { 
+          console.log(`[lobster-device-control] mirror socket.write intercepted, ${typeof data === 'string' ? data.substring(0, 80) : Buffer.isBuffer(data) ? `Buffer(${(data as Buffer).length}b)` : typeof data}`);
+          return origWrite(data as never, ...(args as never[])); 
+        }) as never;
+        console.log(`[lobster-device-control] mirror handleUpgrade starting...`);
+        this.mirrorWss.handleUpgrade(req, socket as never, head, (ws) => {
+          console.log(`[lobster-device-control] mirror handleUpgrade SUCCESS`);
+          socket.end = origEnd;
+          socket.destroy = origDestroy;
+          socket.write = origWrite as never;
+          this.mirrorWss.emit('connection', ws, req);
+        });
       }
     });
   }
@@ -260,12 +311,13 @@ export class WsServer {
     });
   }
 
-  /** Close all device connections and stop the server. */
+/** Close all device connections and stop the server. */
   stop(): void {
     for (const session of this.registry.sessions()) {
       session.ws.close(1000, 'server shutdown');
     }
     this.wss.close();
+    this.mirrorWss.close();
   }
 
   // ─── Connection Handler ─────────────────────────────────────────────────────
@@ -374,6 +426,65 @@ export class WsServer {
     if (event === 'device_info') {
       this.registry.updateStatus(deviceId, msg as Partial<DeviceInfo>);
     }
+  }
+
+  private handleMirrorConnection(ws: WebSocket, _req: unknown): void {
+    let subscribedDeviceId: string | null = null;
+
+    ws.on('message', (data) => {
+      try {
+        const msg = JSON.parse(data.toString()) as Record<string, unknown>;
+
+        if (!subscribedDeviceId) {
+          const targetDeviceId = (msg.deviceId ?? '') as string;
+          if (!targetDeviceId || !this.registry.get(targetDeviceId)) {
+            ws.send(JSON.stringify({ type: 'error', code: 'DEVICE_NOT_FOUND', message: `Device ${targetDeviceId} not found` }));
+            ws.close(4404, 'device not found');
+            return;
+          }
+          subscribedDeviceId = targetDeviceId;
+          this.registry.addMirrorForwarder(targetDeviceId, ws);
+          console.log(`[lobster-device-control] mirror subscriber connected for device: ${targetDeviceId}`);
+
+          const fps = typeof (msg as Record<string, unknown>).fps === 'number' ? (msg as Record<string, unknown>).fps as number : 5;
+          this.sendToDevice(targetDeviceId, { channel: 'mirror', type: 'start', deviceId: targetDeviceId, fps });
+          console.log(`[lobster-device-control] sent mirror start to device: ${targetDeviceId} (fps=${fps})`);
+
+          const lastSnapshot = this.registry.get(targetDeviceId)?.lastSnapshot;
+          if (lastSnapshot && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ channel: 'mirror', ...lastSnapshot }));
+          }
+        }
+
+        if (subscribedDeviceId) {
+          const channel = msg.channel as string;
+          if (channel === 'mirror') {
+            const type = msg.type as string;
+            if (type === 'click' || type === 'swipe' || type === 'input_text' || type === 'press_key') {
+              this.sendToDevice(subscribedDeviceId, msg);
+            }
+          }
+        }
+      } catch (err) {
+        console.warn('[lobster-device-control] Failed to parse mirror message:', err);
+      }
+    });
+
+    ws.on('close', () => {
+      if (subscribedDeviceId) {
+        console.log(`[lobster-device-control] mirror subscriber disconnected for device: ${subscribedDeviceId}`);
+        this.registry.removeMirrorForwarder(subscribedDeviceId, ws);
+        const remaining = this.registry.getMirrorForwarders(subscribedDeviceId);
+        if (remaining.size === 0) {
+          this.sendToDevice(subscribedDeviceId, { channel: 'mirror', type: 'stop', deviceId: subscribedDeviceId });
+          console.log(`[lobster-device-control] sent mirror stop to device: ${subscribedDeviceId}`);
+        }
+      }
+    });
+
+    ws.on('error', (err) => {
+      console.warn(`[lobster-device-control] mirror WS error (deviceId=${subscribedDeviceId}): ${err.message}`);
+    });
   }
 
   // ─── Outbound mirror commands (PC → phone) ──────────────────────────────────
