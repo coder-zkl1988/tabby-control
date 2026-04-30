@@ -74,8 +74,8 @@ class InProcessBridge {
     return this.registry.list();
   }
 
-  async executeTask(deviceId: string, task: string, timeoutMs = 300_000): Promise<TaskResult> {
-    return this.coordinator.executeTask(deviceId, task, timeoutMs);
+  async executeTask(deviceId: string, task: string, timeoutMs = 300_000, guidance?: string, sessionId?: string, maxSteps?: number, allowedActions?: string[], allowedApps?: string[]): Promise<TaskResult> {
+    return this.coordinator.executeTask(deviceId, task, timeoutMs, guidance, sessionId, maxSteps, allowedActions, allowedApps);
   }
 
   async executeTaskAll(task: string, timeoutMs = 300_000) {

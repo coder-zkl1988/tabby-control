@@ -68,6 +68,11 @@ export const ExecuteParamsSchema = z.object({
   taskId: TaskIdSchema,
   task: z.string().min(1),
   mode: z.enum(['autonomous']).default('autonomous'),
+  maxSteps: z.number().int().positive().optional(),
+  guidance: z.string().optional(),
+  sessionId: z.string().optional(),
+  allowedActions: z.array(z.string()).optional(),
+  allowedApps: z.array(z.string()).optional(),
 });
 export type ExecuteParams = z.infer<typeof ExecuteParamsSchema>;
 
@@ -93,6 +98,10 @@ export const AgentProgressParamsSchema = z.object({
   progressPercent: z.number().min(0).max(100),
   thinking: z.string().optional(),
   screenshot: z.string().optional(), // base64 PNG
+  interaction_request: z.object({
+    message: z.string(),
+    screenshot: z.string().optional(),
+  }).optional(),
 });
 export type AgentProgressParams = z.infer<typeof AgentProgressParamsSchema>;
 
@@ -116,8 +125,11 @@ export const TaskResultSchema = z.object({
   totalSteps: z.number().int().min(0).optional(),
   steps: z.array(StepRecordSchema).optional(),
   failedAtStep: z.number().int().min(1).optional(),
-  finalScreenshot: z.string().optional(), // base64 PNG
+  finalScreenshot: z.string().optional(), // base64 PNG or file path
   duration: z.number().int().nonnegative().optional(), // ms
+  needsInteraction: z.boolean().optional(),
+  interactionMessage: z.string().optional(),
+  interactionScreenshot: z.string().optional(), // file path
 });
 export type TaskResult = z.infer<typeof TaskResultSchema>;
 
@@ -248,7 +260,7 @@ export type PluginConfig = z.infer<typeof PluginConfigSchema>;
 export interface DeviceBridge {
   ping(): Promise<boolean>;
   listDevices(): Promise<DeviceInfo[]>;
-  executeTask(deviceId: string, task: string, timeoutMs?: number): Promise<TaskResult>;
+  executeTask(deviceId: string, task: string, timeoutMs?: number, guidance?: string, sessionId?: string, maxSteps?: number, allowedActions?: string[], allowedApps?: string[]): Promise<TaskResult>;
   executeTaskAll(task: string, timeoutMs?: number): Promise<Record<string, TaskResult>>;
   executeBatch(tasks: Array<{ deviceId: string; task: string }>, timeoutMs?: number): Promise<Record<string, TaskResult>>;
   cancelTask(deviceId: string, taskId: string): Promise<void>;

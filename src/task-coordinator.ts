@@ -85,6 +85,11 @@ export class TaskCoordinator {
     deviceId: string,
     task: string,
     timeoutMs = 300_000,
+    guidance?: string,
+    sessionId?: string,
+    maxSteps?: number,
+    allowedActions?: string[],
+    allowedApps?: string[],
   ): Promise<TaskResult> {
     const device = this.wsServer.getRegistry().get(deviceId);
     if (!device) throw new Error(`DEVICE_NOT_FOUND: no device with id ${deviceId}`);
@@ -102,11 +107,20 @@ export class TaskCoordinator {
 
     console.log(`[lobster-device-control] >>> EXECUTE_TASK >>> taskId=${taskId} deviceId=${deviceId} task="${task}" timeoutMs=${timeoutMs}`);
 
+    const params: Record<string, unknown> = {
+      taskId, task, mode: 'autonomous' as const,
+    };
+    if (maxSteps) params.maxSteps = maxSteps;
+    if (guidance) params.guidance = guidance;
+    if (sessionId) params.sessionId = sessionId;
+    if (allowedActions) params.allowedActions = allowedActions;
+    if (allowedApps) params.allowedApps = allowedApps;
+
     const sent = this.wsServer.sendToDevice(deviceId, {
       channel: 'task',
       id: taskId,
       method: 'agent.execute',
-      params: { taskId, task, mode: 'autonomous' } satisfies ExecuteParams,
+      params,
     });
 
     if (!sent) {
@@ -293,6 +307,61 @@ export class TaskCoordinator {
     // ── Progress ─────────────────────────────────────────────────────────────
     if (message.method === 'agent.progress') {
       const params = message.params as Record<string, unknown>;
+
+      // Forward interaction_request to OpenClaw via IPC (VLM needs decision)
+      const interactionReq = params.interaction_request as { message: string; screenshot?: string } | undefined;
+      if (interactionReq) {
+        let screenshotForIpc: string | undefined = interactionReq.screenshot;
+        if (screenshotForIpc) {
+          try {
+            const buffer = Buffer.from(screenshotForIpc, 'base64');
+            const filePath = join(SCREENSHOT_DIR, `interaction_${params.taskId}_step${params.step}.webp`);
+            fs.writeFileSync(filePath, buffer);
+            screenshotForIpc = filePath;
+          } catch (err) {
+            console.warn(`[lobster-device-control] Failed to save interaction screenshot: ${err}`);
+          }
+        }
+
+        // Notify Electron IPC subscribers (for desktop mode)
+        this.ipcNotifier('device:interaction_request', {
+          deviceId,
+          taskId: params.taskId,
+          step: params.step,
+          screenshot: screenshotForIpc,
+          message: interactionReq.message,
+        });
+
+        // Resolve the pending task Promise so the AI (OpenClaw) can analyze the
+        // screenshot and decide. The phone waits 60s for a guidance reply.
+        const taskId = String(params.taskId);
+        const pending = this.pending.get(taskId as TaskId);
+        if (pending) {
+          clearTimeout(pending.timeout);
+          this.pending.delete(taskId as TaskId);
+
+          this.wsServer.getRegistry().updateStatus(deviceId, {
+            status: 'idle',
+            currentTaskId: undefined,
+          });
+          this.ipcNotifier('device:status_change', {
+            deviceId,
+            status: 'idle',
+            taskId: undefined,
+          });
+
+          pending.resolve({
+            taskId,
+            success: false,
+            message: interactionReq.message,
+            totalSteps: params.step as number,
+            needsInteraction: true,
+            interactionMessage: interactionReq.message,
+            interactionScreenshot: screenshotForIpc,
+          });
+        }
+      }
+
       for (const cb of this.progressCallbacks) {
         try {
           cb(

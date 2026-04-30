@@ -35,6 +35,23 @@ function formatDevices(devices: DeviceInfo[]): string {
 function formatTaskResult(result: TaskResult, deviceId: string): string {
   const sections: string[] = [];
 
+  // Interaction needed: VLM paused, awaiting AI guidance
+  if (result.needsInteraction) {
+    sections.push(`⏸️ **Device VLM needs your decision (Interact)**`);
+    sections.push(`Device: ${deviceId}`);
+    sections.push(`Progress: ${result.totalSteps ?? 0} steps`);
+    sections.push(`\nQuestion from device: ${result.interactionMessage ?? result.message ?? 'Unknown'}`);
+    sections.push(`\nTo respond, call device:execute_task with:`);
+    sections.push(`- deviceId: "${deviceId}"`);
+    sections.push(`- task: the original task description`);
+    sections.push(`- sessionId: "${result.taskId}"`);
+    sections.push(`- guidance: your decision (e.g., "点击第一个选项", "滑动到底部查看更多")`);
+    if (result.interactionScreenshot) {
+      sections.push(`\n📸 Current screen: ${result.interactionScreenshot}`);
+    }
+    return sections.join('\n');
+  }
+
   if (result.success) {
     sections.push(`✅ Task completed`);
     if (result.message) sections.push(result.message);
@@ -112,6 +129,17 @@ export function createExecuteTaskTool(client: DeviceBridge) {
       'if the user says "open WeChat and send a message to Zhang San", send the full',
       'task "打开微信给张三发消息：今晚吃饭吗" in one device:execute_task call.',
       '',
+      '## Handling Interact Events',
+      '',
+      'The device VLM may pause with an Interact condition when it needs your decision.',
+      'When this happens, you will receive an interaction_request event (via progress)',
+      'with a screenshot of the current screen and a message explaining what it needs.',
+      'You should:',
+      '1. Analyze the screenshot to understand the current screen state',
+      '2. Make a decision about what to do next',
+      '3. Call device:execute_task with sessionId + guidance to resume the paused task',
+      '   (use the same task description, add your decision as the guidance parameter)',
+      '',
       'Examples:',
       '- "打开小红书，浏览首页前三屏内容" (NOT split into "open app" + "scroll" + "report")',
       '- "打开微信给张三发消息：今晚吃饭吗"',
@@ -133,12 +161,34 @@ export function createExecuteTaskTool(client: DeviceBridge) {
           description: 'Timeout in milliseconds (default: 300000, max: 600000)',
           default: 300000,
         },
+        guidance: {
+          type: 'string',
+          description: 'Decision or instruction to resume a paused task (e.g., after an Interact event)',
+        },
+        sessionId: {
+          type: 'string',
+          description: 'Session ID from a previous task to resume',
+        },
+        maxSteps: {
+          type: 'number',
+          description: 'Maximum number of VLM steps (default: 50). Limits the autonomous agent loop iterations.',
+        },
+        allowedActions: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Whitelist of allowed action types (e.g., ["Tap", "Swipe", "Launch"]). Other actions will be blocked.',
+        },
+        allowedApps: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Whitelist of allowed app names or packages (e.g., ["微信", "com.tencent.mm"]). Only for Launch actions.',
+        },
       },
       required: ['deviceId', 'task'],
     },
     async execute(
       _id: string,
-      params: { deviceId?: string; task?: string; timeout?: number },
+      params: { deviceId?: string; task?: string; timeout?: number; guidance?: string; sessionId?: string; maxSteps?: number; allowedActions?: string[]; allowedApps?: string[] },
     ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
       if (!params.deviceId || !params.task) {
         return { content: [{ type: 'text', text: 'deviceId and task are required.' }], isError: true };
@@ -148,6 +198,11 @@ export function createExecuteTaskTool(client: DeviceBridge) {
           params.deviceId,
           params.task,
           Math.min(params.timeout ?? 300_000, 600_000),
+          params.guidance,
+          params.sessionId,
+          params.maxSteps,
+          params.allowedActions,
+          params.allowedApps,
         );
         const text = formatTaskResult(result, params.deviceId);
         return { content: [{ type: 'text', text }], isError: !result.success };

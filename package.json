@@ -1,7 +1,7 @@
 {
-  "name": "@youngclaw/lobster-device-control",
+  "name": "@youngclaw/tabby-control",
   "version": "2026.3.2",
-  "description": "Remote Android device control plugin for OpenClaw. Manages WebSocket connections with LobsterAgent Android app and exposes device control as OpenClaw tools.",
+  "description": "Remote Android device control plugin for Tabby. Manages WebSocket connections with Tababy Android app and exposes device control as tools.",
   "type": "module",
   "main": "./dist/index.js",
   "module": "./dist/index.js",
