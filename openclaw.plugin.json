@@ -1,6 +1,6 @@
 {
-  "id": "lobster-device-control",
-  "name": "LobsterDeviceControl",
+  "id": "tabby-control",
+  "name": "TabbyControl",
   "description": "通过 WebSocket 控制 Android 设备。OpenClaw 下发自然语言任务，手机端自主执行。",
   "configSchema": {
     "type": "object",

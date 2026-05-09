@@ -1,5 +1,5 @@
 /**
- * lobster-device-control — OpenClaw plugin entry point
+ * tabby-control — OpenClaw plugin entry point
  *
  * Starts a WebSocket server for phone connections (on wsPort)
  * and registers device control tools via the OpenClaw plugin API.
@@ -8,6 +8,11 @@
 import { createServer, type Server as HTTPServer } from 'http';
 import { WsServer } from './ws-server.js';
 import { TaskCoordinator } from './task-coordinator.js';
+
+// Guard against double-loading: OpenClaw may load plugins through both
+// [gateway] and [plugins] registries, causing a second register() call
+// that creates a new (empty) DeviceRegistry whose tools override the first.
+let initialized = false;
 import type { TaskResult } from './protocol.js';
 import {
   createDeviceListTool,
@@ -145,7 +150,7 @@ function startHttpServer(
 
           switch (method) {
             case 'device.list':
-              result = await coordinator.executeTaskAll('', 1);
+              result = await bridge.listDevices();
               break;
             case 'device.execute_task':
               result = await coordinator.executeTask(
@@ -198,7 +203,7 @@ function startHttpServer(
   });
 
   server.listen(port, '0.0.0.0', () => {
-    logger.info(`[lobster-device-control] HTTP RPC server listening on http://0.0.0.0:${port}`);
+    logger.info(`[tabby-control] HTTP RPC server listening on http://0.0.0.0:${port}`);
   });
 
   return server;
@@ -207,10 +212,10 @@ function startHttpServer(
 // ─── Plugin ───────────────────────────────────────────────────────────────────
 
 export default {
-  id: 'lobster-device-control',
-  name: 'LobsterDeviceControl',
+  id: 'tabby-control',
+  name: 'TabbyControl',
   description:
-    'Standalone Android device control via WebSocket. No LobsterAI desktop app required.',
+    'Standalone Android device control via WebSocket. No Tabby desktop app required.',
 
   configSchema: {
     parse(value: unknown): Record<string, unknown> {
@@ -221,16 +226,22 @@ export default {
   },
 
   register(api: OpenClawPluginApi): void {
+    if (initialized) {
+      api.logger.warn('[tabby-control] already initialized — skipping duplicate register() call');
+      return;
+    }
+    initialized = true;
+
     const pluginConfig = api.pluginConfig ?? {};
     const logger = api.logger;
-    logger.info(`[lobster-device-control] pluginConfig: ${JSON.stringify(pluginConfig)}`);
+    logger.info(`[tabby-control] pluginConfig: ${JSON.stringify(pluginConfig)}`);
     const config = {
       wsPort: typeof pluginConfig.wsPort === 'number' ? pluginConfig.wsPort : DEFAULT_CONFIG.wsPort,
       rpcPort: typeof pluginConfig.rpcPort === 'number' ? pluginConfig.rpcPort : DEFAULT_CONFIG.rpcPort,
     };
 
     const ipcNotifier = (channel: string, data: unknown) => {
-      logger.debug(`[lobster-device-control] IPC: ${channel}`);
+      logger.debug(`[tabby-control] IPC: ${channel}`);
     };
 
     const wsServer = new WsServer(config.wsPort, ipcNotifier);
@@ -246,10 +257,10 @@ export default {
     });
     wsServer.attachToServer(httpServer);
     httpServer.listen(config.wsPort, '0.0.0.0', () => {
-      logger.info(`[lobster-device-control] WebSocket server listening on ws://0.0.0.0:${config.wsPort}/phone`);
+      logger.info(`[tabby-control] WebSocket server listening on ws://0.0.0.0:${config.wsPort}/phone`);
     });
     httpServer.on('error', (err) => {
-      logger.error(`[lobster-device-control] HTTP server error on port ${config.wsPort}: ${err.message}`);
+      logger.error(`[tabby-control] HTTP server error on port ${config.wsPort}: ${err.message}`);
     });
 
     const coordinator = new TaskCoordinator(wsServer, ipcNotifier);
@@ -258,16 +269,16 @@ export default {
 
     wsServer.setMirrorHandler({
       onClick: (deviceId, params) => {
-        logger.debug(`[lobster-device-control] mirror click ${deviceId}: ${JSON.stringify(params)}`);
+        logger.debug(`[tabby-control] mirror click ${deviceId}: ${JSON.stringify(params)}`);
       },
       onSwipe: (deviceId, params) => {
-        logger.debug(`[lobster-device-control] mirror swipe ${deviceId}: ${JSON.stringify(params)}`);
+        logger.debug(`[tabby-control] mirror swipe ${deviceId}: ${JSON.stringify(params)}`);
       },
       onText: (deviceId, params) => {
-        logger.debug(`[lobster-device-control] mirror text ${deviceId}: ${JSON.stringify(params)}`);
+        logger.debug(`[tabby-control] mirror text ${deviceId}: ${JSON.stringify(params)}`);
       },
       onKey: (deviceId, params) => {
-        logger.debug(`[lobster-device-control] mirror key ${deviceId}: ${JSON.stringify(params)}`);
+        logger.debug(`[tabby-control] mirror key ${deviceId}: ${JSON.stringify(params)}`);
       },
     });
 
@@ -291,7 +302,7 @@ export default {
     api.registerTool(makeTool(createGetStatusTool));
 
     logger.info(
-      `[lobster-device-control] registered 6 device control tools. ` +
+      `[tabby-control] registered 6 device control tools. ` +
       `WebSocket on ws://0.0.0.0:${config.wsPort}/phone, Mirror on ws://0.0.0.0:${config.wsPort}/mirror`,
     );
   },

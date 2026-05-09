@@ -1,5 +1,5 @@
 /**
- * lobster-device-control protocol
+ * tabby-control protocol
  *
  * All shared types and Zod schemas for the device control plugin.
  * Single source of truth — imported by ws-server.ts, task-coordinator.ts, tools.ts.

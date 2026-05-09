@@ -1,5 +1,5 @@
 /**
- * lobster-device-control WebSocket server
+ * tabby-control WebSocket server
  *
  * Handles phone connections, auth handshake, message routing by channel,
  * and notifies the Electron main process via IPC callbacks.
@@ -250,11 +250,11 @@ export class WsServer {
   sendToDevice(deviceId: string, message: object): boolean {
     const session = this.registry.get(deviceId);
     if (!session || session.ws.readyState !== WebSocket.OPEN) {
-      console.log(`[lobster-device-control] sendToDevice(${deviceId}) SKIPPED - not connected`);
+      console.log(`[tabby-control] sendToDevice(${deviceId}) SKIPPED - not connected`);
       return false;
     }
     const json = JSON.stringify(message);
-    console.log(`[lobster-device-control] >>> WS_SEND >>> deviceId=${deviceId} raw=${json}`);
+    console.log(`[tabby-control] >>> WS_SEND >>> deviceId=${deviceId} raw=${json}`);
     session.ws.send(json);
     return true;
   }
@@ -269,7 +269,7 @@ export class WsServer {
   attachToServer(server: HTTPServer): void {
     server.prependListener('upgrade', (req, socket, head) => {
       const url = req.url ?? '/';
-      console.log(`[lobster-device-control] TCP upgrade: url=${JSON.stringify(url)}, phone=${url === '/phone'}, mirror=${url === '/mirror'}, remote=${req.socket.remoteAddress}`);
+      console.log(`[tabby-control] TCP upgrade: url=${JSON.stringify(url)}, phone=${url === '/phone'}, mirror=${url === '/mirror'}, remote=${req.socket.remoteAddress}`);
       if (url === '/phone') {
         const origEnd = socket.end.bind(socket);
         const origDestroy = socket.destroy.bind(socket);
@@ -287,12 +287,12 @@ export class WsServer {
         socket.end = () => socket;
         socket.destroy = () => socket as never;
         socket.write = ((data: unknown, ...args: unknown[]) => { 
-          console.log(`[lobster-device-control] mirror socket.write intercepted, ${typeof data === 'string' ? data.substring(0, 80) : Buffer.isBuffer(data) ? `Buffer(${(data as Buffer).length}b)` : typeof data}`);
+          console.log(`[tabby-control] mirror socket.write intercepted, ${typeof data === 'string' ? data.substring(0, 80) : Buffer.isBuffer(data) ? `Buffer(${(data as Buffer).length}b)` : typeof data}`);
           return origWrite(data as never, ...(args as never[])); 
         }) as never;
-        console.log(`[lobster-device-control] mirror handleUpgrade starting...`);
+        console.log(`[tabby-control] mirror handleUpgrade starting...`);
         this.mirrorWss.handleUpgrade(req, socket as never, head, (ws) => {
-          console.log(`[lobster-device-control] mirror handleUpgrade SUCCESS`);
+          console.log(`[tabby-control] mirror handleUpgrade SUCCESS`);
           socket.end = origEnd;
           socket.destroy = origDestroy;
           socket.write = origWrite as never;
@@ -337,19 +337,19 @@ export class WsServer {
     ws.on('message', (data) => {
       try {
         const raw = data.toString();
-        console.log(`[lobster-device-control] ws message received: ${raw}`);
+        console.log(`[tabby-control] ws message received: ${raw}`);
         const msg = JSON.parse(raw) as Record<string, unknown>;
 
         // ── Auth phase — no token required, just deviceId ─────────────────────
         if (!authed) {
           // Accept any message with a deviceId — no token check
-          console.log(`[lobster-device-control] auth phase, msg keys: ${Object.keys(msg).join(',')}`);
+          console.log(`[tabby-control] auth phase, msg keys: ${Object.keys(msg).join(',')}`);
           const deviceIdCandidate = (msg.deviceId ?? (msg as Record<string, unknown>).device_id) as string | undefined;
           const capabilities = (msg.capabilities ?? (msg as Record<string, unknown>).capabilities) as DeviceCapabilities | undefined;
           if (!deviceIdCandidate) {
             ws.send(JSON.stringify({ type: 'error', code: 'AUTH_FAILED', message: 'deviceId required' }));
             ws.close(4003, 'auth failed');
-            console.log(`[lobster-device-control] auth failed: no deviceId in msg`);
+            console.log(`[tabby-control] auth failed: no deviceId in msg`);
             return;
           }
 
@@ -360,7 +360,7 @@ export class WsServer {
           const session = this.registry.register(deviceId, ws, capabilities);
           ws.send(JSON.stringify({ type: 'connected', serverSessionId: deviceId }));
           this.ipcNotifier('device:connected', session.info);
-          console.log(`[lobster-device-control] device connected: ${deviceId}`);
+          console.log(`[tabby-control] device connected: ${deviceId}`);
           return;
         }
 
@@ -381,7 +381,7 @@ export class WsServer {
           this.handleControlMessage(deviceId!, msg);
         }
       } catch (err) {
-        console.warn('[lobster-device-control] Failed to parse message:', err);
+        console.warn('[tabby-control] Failed to parse message:', err);
       }
     });
 
@@ -390,12 +390,12 @@ export class WsServer {
       if (deviceId) {
         this.registry.remove(deviceId);
         this.ipcNotifier('device:disconnected', { deviceId });
-        console.log(`[lobster-device-control] device disconnected: ${deviceId}`);
+        console.log(`[tabby-control] device disconnected: ${deviceId}`);
       }
     });
 
     ws.on('error', (err) => {
-      console.warn(`[lobster-device-control] WS error (deviceId=${deviceId}): ${err.message}`);
+      console.warn(`[tabby-control] WS error (deviceId=${deviceId}): ${err.message}`);
     });
   }
 
@@ -444,11 +444,11 @@ export class WsServer {
           }
           subscribedDeviceId = targetDeviceId;
           this.registry.addMirrorForwarder(targetDeviceId, ws);
-          console.log(`[lobster-device-control] mirror subscriber connected for device: ${targetDeviceId}`);
+          console.log(`[tabby-control] mirror subscriber connected for device: ${targetDeviceId}`);
 
           const fps = typeof (msg as Record<string, unknown>).fps === 'number' ? (msg as Record<string, unknown>).fps as number : 5;
           this.sendToDevice(targetDeviceId, { channel: 'mirror', type: 'start', deviceId: targetDeviceId, fps });
-          console.log(`[lobster-device-control] sent mirror start to device: ${targetDeviceId} (fps=${fps})`);
+          console.log(`[tabby-control] sent mirror start to device: ${targetDeviceId} (fps=${fps})`);
 
           const lastSnapshot = this.registry.get(targetDeviceId)?.lastSnapshot;
           if (lastSnapshot && ws.readyState === WebSocket.OPEN) {
@@ -466,24 +466,24 @@ export class WsServer {
           }
         }
       } catch (err) {
-        console.warn('[lobster-device-control] Failed to parse mirror message:', err);
+        console.warn('[tabby-control] Failed to parse mirror message:', err);
       }
     });
 
     ws.on('close', () => {
       if (subscribedDeviceId) {
-        console.log(`[lobster-device-control] mirror subscriber disconnected for device: ${subscribedDeviceId}`);
+        console.log(`[tabby-control] mirror subscriber disconnected for device: ${subscribedDeviceId}`);
         this.registry.removeMirrorForwarder(subscribedDeviceId, ws);
         const remaining = this.registry.getMirrorForwarders(subscribedDeviceId);
         if (remaining.size === 0) {
           this.sendToDevice(subscribedDeviceId, { channel: 'mirror', type: 'stop', deviceId: subscribedDeviceId });
-          console.log(`[lobster-device-control] sent mirror stop to device: ${subscribedDeviceId}`);
+          console.log(`[tabby-control] sent mirror stop to device: ${subscribedDeviceId}`);
         }
       }
     });
 
     ws.on('error', (err) => {
-      console.warn(`[lobster-device-control] mirror WS error (deviceId=${subscribedDeviceId}): ${err.message}`);
+      console.warn(`[tabby-control] mirror WS error (deviceId=${subscribedDeviceId}): ${err.message}`);
     });
   }
 

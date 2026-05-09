@@ -70,7 +70,7 @@ export class TaskCoordinator {
     // Ensure taskData directory exists
     if (!fs.existsSync(SCREENSHOT_DIR)) {
       fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
-      console.log(`[lobster-device-control] Created screenshot dir: ${SCREENSHOT_DIR}`);
+      console.log(`[tabby-control] Created screenshot dir: ${SCREENSHOT_DIR}`);
     }
     this.ipcNotifier = ipcNotifier;
   }
@@ -105,7 +105,7 @@ export class TaskCoordinator {
     });
     this.ipcNotifier('device:status_change', { deviceId, status: 'busy', taskId });
 
-    console.log(`[lobster-device-control] >>> EXECUTE_TASK >>> taskId=${taskId} deviceId=${deviceId} task="${task}" timeoutMs=${timeoutMs}`);
+    console.log(`[tabby-control] >>> EXECUTE_TASK >>> taskId=${taskId} deviceId=${deviceId} task="${task}" timeoutMs=${timeoutMs}`);
 
     const params: Record<string, unknown> = {
       taskId, task, mode: 'autonomous' as const,
@@ -124,7 +124,7 @@ export class TaskCoordinator {
     });
 
     if (!sent) {
-      console.log(`[lobster-device-control] >>> EXECUTE_TASK >>> FAILED - device offline or not found, deviceId=${deviceId}`);
+      console.log(`[tabby-control] >>> EXECUTE_TASK >>> FAILED - device offline or not found, deviceId=${deviceId}`);
       this.wsServer.getRegistry().updateStatus(deviceId, {
         status: 'idle',
         currentTaskId: undefined,
@@ -248,11 +248,11 @@ export class TaskCoordinator {
       // Decode base64 and write WebP file
       const buffer = Buffer.from(taskResult.finalScreenshot, 'base64');
       fs.writeFileSync(filePath, buffer);
-      console.log(`[lobster-device-control] Screenshot saved: ${filePath} (${buffer.length} bytes)`);
+      console.log(`[tabby-control] Screenshot saved: ${filePath} (${buffer.length} bytes)`);
       // Return result with file path instead of base64
       return { ...taskResult, finalScreenshot: filePath };
     } catch (err) {
-      console.warn(`[lobster-device-control] Failed to save screenshot: ${err}`);
+      console.warn(`[tabby-control] Failed to save screenshot: ${err}`);
       return taskResult; // Fallback: return original result with base64
     }
   }
@@ -263,7 +263,7 @@ export class TaskCoordinator {
   // arrives from a phone via the WebSocket server.
 
   handleTaskMessage(deviceId: string, message: Record<string, unknown>): void {
-    console.log(`[lobster-device-control] handleTaskMessage: deviceId=${deviceId}, id=${message.id}, hasResult=${!!message.result}, method=${message.method}`);
+    console.log(`[tabby-control] handleTaskMessage: deviceId=${deviceId}, id=${message.id}, hasResult=${!!message.result}, method=${message.method}`);
 
     // ── Result ────────────────────────────────────────────────────────────────
     if (message.result) {
@@ -271,12 +271,12 @@ export class TaskCoordinator {
       // message.id is "resp_<taskId>" but pending map key is the raw taskId — strip prefix
       const rawId = (message.id as string) || (result.taskId as string);
       const taskId = rawId?.startsWith('resp_') ? rawId.slice(5) : rawId;
-      console.log(`[lobster-device-control] RESULT: rawId=${rawId}, taskId=${taskId}, pendingKeys=${[...this.pending.keys()].join(',')}`);
+      console.log(`[tabby-control] RESULT: rawId=${rawId}, taskId=${taskId}, pendingKeys=${[...this.pending.keys()].join(',')}`);
 
       if (!taskId) return;
 
       const pending = this.pending.get(taskId as TaskId);
-      console.log(`[lobster-device-control] pending.get(${taskId}) = ${pending ? 'FOUND' : 'NOT FOUND'}`);
+      console.log(`[tabby-control] pending.get(${taskId}) = ${pending ? 'FOUND' : 'NOT FOUND'}`);
       if (pending) {
         clearTimeout(pending.timeout);
         this.pending.delete(taskId as TaskId);
@@ -319,7 +319,7 @@ export class TaskCoordinator {
             fs.writeFileSync(filePath, buffer);
             screenshotForIpc = filePath;
           } catch (err) {
-            console.warn(`[lobster-device-control] Failed to save interaction screenshot: ${err}`);
+            console.warn(`[tabby-control] Failed to save interaction screenshot: ${err}`);
           }
         }
 

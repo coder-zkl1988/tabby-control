@@ -86,7 +86,7 @@ export class BridgeClient {
 
   async executeTask(deviceId: string, task: string, timeoutMs = 300_000, guidance?: string, sessionId?: string): Promise<TaskResult> {
     if (guidance || sessionId) {
-      console.warn(`[lobster-device-control] BridgeClient (HTTP) does not support guidance/sessionId — params ignored for device ${deviceId}`);
+      console.warn(`[tabby-control] BridgeClient (HTTP) does not support guidance/sessionId — params ignored for device ${deviceId}`);
     }
     return this.call<TaskResult>('device.execute_task', { deviceId, task, timeoutMs });
   }
