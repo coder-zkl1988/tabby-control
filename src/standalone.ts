@@ -3,7 +3,7 @@
  * tabby-control — Standalone device control service
  *
  * Starts WebSocket server (phone connections) + HTTP RPC server (controller queries)
- * without requiring OpenClaw plugin infrastructure.
+ * without requiring Tabby plugin infrastructure.
  *
  * Usage:
  *   node dist/standalone.js              # defaults: wsPort=18800 rpcPort=18801
@@ -51,7 +51,7 @@ async function main() {
     log('info', `WebSocket server listening on ws://0.0.0.0:${wsPort}/phone`);
   });
 
-  // ── Start HTTP RPC server for controller/OpenClaw queries ──
+  // ── Start HTTP RPC server for controller/Tabby queries ──
   const rpcServer = createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');

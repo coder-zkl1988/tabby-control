@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-`lobster-device-control` is an OpenClaw plugin that enables remote control of Android devices via WebSocket connections from the **LobsterAgent** Android app. It exposes 6 tools to the OpenClaw agent for device management and task execution.
+`tabby-control` is a Tabby plugin that enables remote control of Android devices via WebSocket connections from the **Tabby Agent** Android app. It exposes 6 tools to the Tabby agent for device management and task execution.
 
-The plugin runs **standalone** — it starts its own WebSocket server (port 18800) and HTTP RPC server (port 18801), without requiring the LobsterAI desktop app.
+The plugin runs **standalone** — it starts its own WebSocket server (port 18800) and HTTP RPC server (port 18801), without requiring the Tabby desktop app.
 
 ## Commands
 
@@ -20,7 +20,7 @@ npm run build:watch  # Watch mode for development
 ## Architecture
 
 ```
-OpenClaw agent → tools.ts (tool definitions)
+Tabby agent → tools.ts (tool definitions)
                      ↓
                InProcessBridge (direct call, no HTTP)
                      ↓
@@ -40,8 +40,8 @@ WebSocket server (port 18800, path /phone) accepts phone connections.
 | `src/ws-server.ts` | WebSocket server (`WsServer`) + device session registry (`DeviceRegistry`). Handles phone auth, message routing by channel, and outbound mirror commands (click/swipe/text/key). |
 | `src/task-coordinator.ts` | Task dispatch and pending-result promise management. Phone-side results resolve the matching pending Promise. |
 | `src/bridge.ts` | `BridgeClient` — HTTP RPC client for the (optional) Electron bridge server. Deprecated in standalone mode. |
-| `src/tools.ts` | OpenClaw tool factories. Each tool takes a `DeviceBridge` and returns a tool definition. |
-| `src/index.ts` | Plugin entry point. Starts WS server + HTTP RPC server, wires everything together, registers tools with OpenClaw via `api.registerTool()`. |
+| `src/tools.ts` | Tabby tool factories. Each tool takes a `DeviceBridge` and returns a tool definition. |
+| `src/index.ts` | Plugin entry point. Starts WS server + HTTP RPC server, wires everything together, registers tools with Tabby via `api.registerTool()`. |
 
 ### WebSocket protocol
 

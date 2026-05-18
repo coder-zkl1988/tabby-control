@@ -1,8 +1,8 @@
-# lobster-device-control
+# tabby-control
 
-> OpenClaw 插件，通过 WebSocket 远程控制 Android 手机
+> Tabby 插件，通过 WebSocket 远程控制 Android 手机
 
-通过 LobsterAgent Android App 将手机连接到 OpenClaw，AI Agent 即可通过自然语言指令控制手机执行自动化任务。
+通过 Tabby Agent Android App 将手机连接到 Tabby，AI Agent 即可通过自然语言指令控制手机执行自动化任务。
 
 ## 功能特性
 
@@ -13,30 +13,30 @@
 
 ## 系统要求
 
-- OpenClaw 桌面客户端
+- Tabby 桌面客户端
 - Android 7.0+ 手机
 - 手机与 PC 同网络（WiFi 或 USB 网络共享）
 
 ## 安装
 
-### 1. 安装 OpenClaw 插件
+### 1. 安装 Tabby 插件
 
 ```bash
-npm install @youngclaw/lobster-device-control@beta
+npm install @youngclaw/tabby-control@beta
 ```
 
-插件会被 OpenClaw 自动发现并加载。
+插件会被 Tabby 自动发现并加载。
 
-### 2. 安装 LobsterAgent Android App
+### 2. 安装 Tabby Agent Android App
 
 下载最新 APK 安装到 Android 手机：
-- [下载 APK](https://example.com/lobster-agent.apk) （替换为实际下载链接）
-- 或自行编译：`cd LobsterAgentAndroid && ./gradlew assembleDebug`
+- [下载 APK](https://example.com/tabby-agent.apk) （替换为实际下载链接）
+- 或自行编译：`cd TabbyAgentAndroid && ./gradlew assembleDebug`
 
-### 3. 连接手机到 OpenClaw
+### 3. 连接手机到 Tabby
 
-1. 打开 LobsterAgent App
-2. 在"服务器地址"填入 OpenClaw 所在 PC 的 IP 和端口：
+1. 打开 Tabby Agent App
+2. 在"服务器地址"填入 Tabby 所在 PC 的 IP 和端口：
    ```
    ws://192.168.1.100:18800
    ```
@@ -47,9 +47,9 @@ npm install @youngclaw/lobster-device-control@beta
 
 ## 使用方式
 
-### 在 OpenClaw 中发送指令
+### 在 Tabby 中发送指令
 
-连接成功后，直接用自然语言让 OpenClaw 控制手机：
+连接成功后，直接用自然语言让 Tabby 控制手机：
 
 ```
 打开小红书，浏览首页第一屏内容
@@ -67,12 +67,12 @@ npm install @youngclaw/lobster-device-control@beta
 
 | 工具 | 说明 |
 |------|------|
-| `device:list` | 查看已连接的手机列表 |
-| `device:execute_task` | 向指定手机发送任务 |
-| `device:execute_task_all` | 向所有手机广播同一任务 |
-| `device:execute_batch` | 向多台手机分别发送不同任务 |
-| `device:cancel_task` | 取消正在执行的任务 |
-| `device:get_status` | 查看指定手机的详细状态 |
+| `device_list` | 查看已连接的手机列表 |
+| `device_execute_task` | 向指定手机发送任务 |
+| `device_execute_task_all` | 向所有手机广播同一任务 |
+| `device_execute_batch` | 向多台手机分别发送不同任务 |
+| `device_cancel_task` | 取消正在执行的任务 |
+| `device_get_status` | 查看指定手机的详细状态 |
 
 ### 查询已连接设备
 
@@ -83,19 +83,19 @@ npm install @youngclaw/lobster-device-control@beta
 返回示例：
 ```
 📱 Connected devices (2):
-  - [24094RAD4C-abc123] Xiaomi | (24094RAD4C) | status=idle | app=com.lobster.agent | screen=1080x2400 | Android 14 | 🔋85% | ⚡ | 📶 MyWiFi
-  - [PTP-AN10-def456] HONOR | (PTP-AN10) | status=idle | app=com.lobster.agent | screen=1280x2800 | Android 15 | 🔋92% | 📶 HonorWiFi
+  - [24094RAD4C-abc123] Xiaomi | (24094RAD4C) | status=idle | app=com.tabby.agent | screen=1080x2400 | Android 14 | 🔋85% | ⚡ | 📶 MyWiFi
+  - [PTP-AN10-def456] HONOR | (PTP-AN10) | status=idle | app=com.tabby.agent | screen=1280x2800 | Android 15 | 🔋92% | 📶 HonorWiFi
 ```
 
 ## 架构说明
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    OpenClaw (PC)                         │
+│                    Tabby (PC)                             │
 │                                                          │
-│  OpenClaw Agent                                          │
+│  Tabby Agent                                             │
 │       ↓                                                  │
-│  lobster-device-control 插件                               │
+│  tabby-control 插件                                       │
 │       ├── WsServer (port 18800) ←── 手机 WebSocket 连接   │
 │       ├── TaskCoordinator (任务分发与结果收集)              │
 │       └── HTTP RPC (port 18801)                          │
@@ -103,7 +103,7 @@ npm install @youngclaw/lobster-device-control@beta
                     ↑ WebSocket
                     ↓
 ┌─────────────────────────────────────────────────────────┐
-│              LobsterAgent Android App                     │
+│              Tabby Agent Android App                      │
 │                                                          │
 │  PhoneAgentRunner (视觉自主 Agent)                       │
 │       ├── 截图 → VLM API → 解析动作 → 执行 → 循环       │
@@ -132,7 +132,7 @@ npm install @youngclaw/lobster-device-control@beta
 
 ### VLM 配置（App 内设置）
 
-在 LobsterAgent App 的设置页面配置：
+在 Tabby Agent App 的设置页面配置：
 
 | 配置项 | 说明 |
 |--------|------|
@@ -142,7 +142,7 @@ npm install @youngclaw/lobster-device-control@beta
 
 ## 常见问题
 
-### 手机连接后显示"空闲"但 OpenClaw 找不到设备
+### 手机连接后显示"空闲"但 Tabby 找不到设备
 
 1. 确认手机和 PC 在同一网络
 2. 检查服务器地址格式：`ws://PC_IP:18800`
@@ -151,10 +151,10 @@ npm install @youngclaw/lobster-device-control@beta
 ### 任务执行时被系统冻结
 
 在 App 设置中关闭电池优化：
-- 设置 → 应用 → LobsterAgent → 电池 → 关闭优化
+- 设置 → 应用 → Tabby Agent → 电池 → 关闭优化
 - 或在 App 内点击"关闭电池优化"按钮
 
-### 截图发到 OpenClaw 后是黑色/空白
+### 截图发到 Tabby 后是黑色/空白
 
 1. 确保系统截屏权限已开启
 2. 部分设备需要在无障碍设置中开启"获取窗口内容"权限
@@ -172,8 +172,8 @@ npm install @youngclaw/lobster-device-control@beta
 
 ```bash
 # 克隆仓库
-git clone https://gitlab.sy.soyoung.com/fe/openclaw-device-control.git
-cd openclaw-device-control
+git clone https://gitlab.sy.soyoung.com/fe/tabby-control.git
+cd tabby-control
 
 # 安装依赖
 npm install
@@ -192,8 +192,8 @@ npm publish --tag beta
 
 ```bash
 # 克隆仓库
-git clone https://gitlab.sy.soyoung.com/fe/LobsterAgentAndroid.git
-cd LobsterAgentAndroid
+git clone https://gitlab.sy.soyoung.com/fe/TabbyAgentAndroid.git
+cd TabbyAgentAndroid
 
 # 构建 debug APK
 ./gradlew assembleDebug

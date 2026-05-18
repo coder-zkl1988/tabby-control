@@ -1,8 +1,8 @@
 /**
- * tabby-control — OpenClaw plugin entry point
+ * tabby-control — Tabby plugin entry point
  *
  * Starts a WebSocket server for phone connections (on wsPort)
- * and registers device control tools via the OpenClaw plugin API.
+ * and registers device control tools via the Tabby plugin API.
  */
 
 import { createServer, type Server as HTTPServer } from 'http';
@@ -26,36 +26,36 @@ const DEFAULT_CONFIG = {
   rpcPort: 18801,
 };
 
-// ─── OpenClaw plugin API types ─────────────────────────────────────────────────
+// ─── Tabby plugin API types ────────────────────────────────────────────────────
 
-interface OpenClawLogger {
+interface TabbyLogger {
   info(msg: string): void;
   warn(msg: string): void;
   error(msg: string): void;
   debug(msg: string): void;
 }
 
-interface OpenClawTool {
+interface TabbyTool {
   name: string;
   label?: string;
   description: string;
   parameters: Record<string, unknown>;
   isAvailable?: () => boolean;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  execute(...args: any[]): Promise<OpenClawToolResult>;
+  execute(...args: any[]): Promise<TabbyToolResult>;
 }
 
-interface OpenClawToolResult {
+interface TabbyToolResult {
   content: Array<{ type: string; text: string }>;
   isError?: boolean;
 }
 
-interface OpenClawPluginApi {
-  logger: OpenClawLogger;
+interface TabbyPluginApi {
+  logger: TabbyLogger;
   sessionKey?: string;
   config?: Record<string, unknown>;
   pluginConfig?: Record<string, unknown>;
-  registerTool(factory: (ctx: { sessionKey?: string }) => OpenClawTool | null): void;
+  registerTool(factory: (ctx: { sessionKey?: string }) => TabbyTool | null): void;
 }
 
 // ─── In-process bridge ──────────────────────────────────────────────────────
@@ -108,7 +108,7 @@ function startHttpServer(
   coordinator: TaskCoordinator,
   bridge: InProcessBridge,
   _notifier: (channel: string, data: unknown) => void,
-  logger: OpenClawLogger,
+  logger: TabbyLogger,
 ): HTTPServer {
   const server = createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -221,7 +221,7 @@ export default {
     },
   },
 
-  register(api: OpenClawPluginApi): void {
+  register(api: TabbyPluginApi): void {
     const pluginConfig = api.pluginConfig ?? {};
     const logger = api.logger;
     logger.info(`[tabby-control] pluginConfig: ${JSON.stringify(pluginConfig)}`);
@@ -247,7 +247,7 @@ export default {
     });
     wsServer.attachToServer(httpServer);
 
-    // OpenClaw may load plugins through both [gateway] and [plugins]
+    // Tabby may load plugins through both [gateway] and [plugins]
     // registries across different workers.  When the port is already
     // bound, skip the rest of initialisation — the first worker's
     // registry already has the live device state and tools.
@@ -297,8 +297,8 @@ export default {
 
       startHttpServer(config.rpcPort, coordinator, bridge, ipcNotifier, logger);
 
-      function makeTool(factory: (bridge: InProcessBridge) => OpenClawTool) {
-        return (): OpenClawTool => {
+      function makeTool(factory: (bridge: InProcessBridge) => TabbyTool) {
+        return (): TabbyTool => {
           const tool = factory(bridge);
           tool.isAvailable = () => true;
           return tool;

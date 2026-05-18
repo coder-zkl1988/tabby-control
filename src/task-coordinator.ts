@@ -2,10 +2,10 @@
  * TaskCoordinator
  *
  * Manages task dispatch to devices and result collection.
- * Bridges OpenClaw tool calls (via HTTP RPC bridge) and phone-side agent execution.
+ * Bridges Tabby tool calls (via HTTP RPC bridge) and phone-side agent execution.
  *
  * Flow:
- *   OpenClaw tool → HTTP POST /rpc { method, params }
+ *   Tabby tool → HTTP POST /rpc { method, params }
  *   → Electron IPC handler receives → TaskCoordinator.handleTaskMessage()
  *   → resolves pending Promise → tool returns result
  */
@@ -30,7 +30,7 @@ import {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 // Screenshots go under ~/.openclaw/media/ which is whitelisted for Feishu media sending
-const SCREENSHOT_DIR = join(homedir(), '.openclaw', 'media', 'lobster-screenshots');
+const SCREENSHOT_DIR = join(homedir(), '.openclaw', 'media', 'tabby-screenshots');
 
 // ─── Pending Request ──────────────────────────────────────────────────────────
 
@@ -224,7 +224,7 @@ export class TaskCoordinator {
   }
 
   /**
-   * Subscribe to progress events (for UI display and OpenClaw decision hooks).
+   * Subscribe to progress events (for UI display and Tabby decision hooks).
    */
   onProgress(callback: ProgressCallback): () => void {
     this.progressCallbacks.push(callback);
@@ -308,7 +308,7 @@ export class TaskCoordinator {
     if (message.method === 'agent.progress') {
       const params = message.params as Record<string, unknown>;
 
-      // Forward interaction_request to OpenClaw via IPC (VLM needs decision)
+      // Forward interaction_request to Tabby via IPC (VLM needs decision)
       const interactionReq = params.interaction_request as { message: string; screenshot?: string } | undefined;
       if (interactionReq) {
         let screenshotForIpc: string | undefined = interactionReq.screenshot;
@@ -332,7 +332,7 @@ export class TaskCoordinator {
           message: interactionReq.message,
         });
 
-        // Resolve the pending task Promise so the AI (OpenClaw) can analyze the
+        // Resolve the pending task Promise so the AI (Tabby) can analyze the
         // screenshot and decide. The phone waits 60s for a guidance reply.
         const taskId = String(params.taskId);
         const pending = this.pending.get(taskId as TaskId);

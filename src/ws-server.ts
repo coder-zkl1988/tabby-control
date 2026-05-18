@@ -259,9 +259,9 @@ export class WsServer {
   }
 
 /**
-   * Attach WebSocket upgrade handler to the OpenClaw gateway HTTP server.
-   * Uses prependListener so our handler runs before OpenClaw's own
-   * upgrade handler. After a successful upgrade, OpenClaw's handler would
+   * Attach WebSocket upgrade handler to the Tabby gateway HTTP server.
+   * Uses prependListener so our handler runs before Tabby's own
+   * upgrade handler. After a successful upgrade, Tabby's handler would
    * destroy the socket, so we neuter socket.end/destroy between our
    * handleUpgrade call and the connection callback.
    */

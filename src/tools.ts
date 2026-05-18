@@ -1,5 +1,5 @@
 /**
- * OpenClaw tool definitions
+ * Tabby tool definitions
  *
  * All tools communicate with the Electron main-process bridge via HTTP RPC.
  * The bridge (exposed at http://localhost:18791) routes calls to the
@@ -13,7 +13,7 @@ import type { DeviceInfo, TaskResult } from './protocol.js';
 
 function formatDevices(devices: DeviceInfo[]): string {
   if (!devices.length) {
-    return 'No devices connected. Open LobsterAgent app on your phone and connect to this PC.';
+    return 'No devices connected. Open Tabby Agent app on your phone and connect to this PC.';
   }
   const lines = devices.map(d => {
     const parts = [
@@ -98,7 +98,7 @@ export function createDeviceListTool(client: DeviceBridge) {
     name: 'device_list',
     label: 'List Connected Devices',
     description: [
-      'List all Android devices currently connected to LobsterAI.',
+      'List all Android devices currently connected to Tabby.',
       'Returns device ID, model, OS version, screen size, status (idle/busy/error), and current app.',
       'Use this first to discover available devices before sending tasks.',
     ].join(' '),

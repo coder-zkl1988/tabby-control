@@ -1,7 +1,7 @@
 /**
  * HTTP RPC bridge client
  *
- * Used by the OpenClaw plugin (in OpenClaw process) to communicate with
+ * Used by the Tabby plugin to communicate with
  * the Electron main-process bridge server running at http://localhost:18791.
  *
  * This file is the client counterpart of the Electron IPC handler that
