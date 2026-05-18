@@ -254,7 +254,6 @@ export class WsServer {
       return false;
     }
     const json = JSON.stringify(message);
-    console.log(`[tabby-control] >>> WS_SEND >>> deviceId=${deviceId} raw=${json}`);
     session.ws.send(json);
     return true;
   }
@@ -337,7 +336,6 @@ export class WsServer {
     ws.on('message', (data) => {
       try {
         const raw = data.toString();
-        console.log(`[tabby-control] ws message received: ${raw}`);
         const msg = JSON.parse(raw) as Record<string, unknown>;
 
         // ── Auth phase — no token required, just deviceId ─────────────────────

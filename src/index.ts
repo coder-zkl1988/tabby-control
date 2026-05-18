@@ -9,10 +9,6 @@ import { createServer, type Server as HTTPServer } from 'http';
 import { WsServer } from './ws-server.js';
 import { TaskCoordinator } from './task-coordinator.js';
 
-// Guard against double-loading: OpenClaw may load plugins through both
-// [gateway] and [plugins] registries, causing a second register() call
-// that creates a new (empty) DeviceRegistry whose tools override the first.
-let initialized = false;
 import type { TaskResult } from './protocol.js';
 import {
   createDeviceListTool,
@@ -226,12 +222,6 @@ export default {
   },
 
   register(api: OpenClawPluginApi): void {
-    if (initialized) {
-      api.logger.warn('[tabby-control] already initialized — skipping duplicate register() call');
-      return;
-    }
-    initialized = true;
-
     const pluginConfig = api.pluginConfig ?? {};
     const logger = api.logger;
     logger.info(`[tabby-control] pluginConfig: ${JSON.stringify(pluginConfig)}`);
@@ -256,54 +246,76 @@ export default {
       }
     });
     wsServer.attachToServer(httpServer);
+
+    // OpenClaw may load plugins through both [gateway] and [plugins]
+    // registries across different workers.  When the port is already
+    // bound, skip the rest of initialisation — the first worker's
+    // registry already has the live device state and tools.
+    let portBound = false;
     httpServer.listen(config.wsPort, '0.0.0.0', () => {
+      portBound = true;
       logger.info(`[tabby-control] WebSocket server listening on ws://0.0.0.0:${config.wsPort}/phone`);
     });
     httpServer.on('error', (err) => {
-      logger.error(`[tabby-control] HTTP server error on port ${config.wsPort}: ${err.message}`);
+      logger.warn(`[tabby-control] port ${config.wsPort} unavailable (${(err as Error & { code?: string }).code ?? (err as Error).message}) — skipping duplicate initialisation`);
     });
 
-    const coordinator = new TaskCoordinator(wsServer, ipcNotifier);
-
-    wsServer.setTaskMessageHandler(coordinator.handleTaskMessage.bind(coordinator));
-
-    wsServer.setMirrorHandler({
-      onClick: (deviceId, params) => {
-        logger.debug(`[tabby-control] mirror click ${deviceId}: ${JSON.stringify(params)}`);
-      },
-      onSwipe: (deviceId, params) => {
-        logger.debug(`[tabby-control] mirror swipe ${deviceId}: ${JSON.stringify(params)}`);
-      },
-      onText: (deviceId, params) => {
-        logger.debug(`[tabby-control] mirror text ${deviceId}: ${JSON.stringify(params)}`);
-      },
-      onKey: (deviceId, params) => {
-        logger.debug(`[tabby-control] mirror key ${deviceId}: ${JSON.stringify(params)}`);
-      },
+    // listen() is async; if the port is already in use the callback
+    // never fires.  Wait a tick for the result.
+    const initDone = new Promise<boolean>((resolve) => {
+      httpServer.on('listening', () => resolve(true));
+      httpServer.on('error', () => resolve(false));
+      // also catch pre-listen errors
     });
 
-    const bridge = new InProcessBridge(coordinator, wsServer.getRegistry(), ipcNotifier);
+    initDone.then((ok) => {
+      if (!ok) {
+        logger.warn('[tabby-control] port unavailable — tools not registered (already loaded by another worker)');
+        return;
+      }
 
-    startHttpServer(config.rpcPort, coordinator, bridge, ipcNotifier, logger);
+      const coordinator = new TaskCoordinator(wsServer, ipcNotifier);
 
-    function makeTool(factory: (bridge: InProcessBridge) => OpenClawTool) {
-      return (): OpenClawTool => {
-        const tool = factory(bridge);
-        tool.isAvailable = () => true;
-        return tool;
-      };
-    }
+      wsServer.setTaskMessageHandler(coordinator.handleTaskMessage.bind(coordinator));
 
-    api.registerTool(makeTool(createDeviceListTool));
-    api.registerTool(makeTool(createExecuteTaskTool));
-    api.registerTool(makeTool(createExecuteTaskAllTool));
-    api.registerTool(makeTool(createExecuteBatchTool));
-    api.registerTool(makeTool(createCancelTaskTool));
-    api.registerTool(makeTool(createGetStatusTool));
+      wsServer.setMirrorHandler({
+        onClick: (deviceId, params) => {
+          logger.debug(`[tabby-control] mirror click ${deviceId}: ${JSON.stringify(params)}`);
+        },
+        onSwipe: (deviceId, params) => {
+          logger.debug(`[tabby-control] mirror swipe ${deviceId}: ${JSON.stringify(params)}`);
+        },
+        onText: (deviceId, params) => {
+          logger.debug(`[tabby-control] mirror text ${deviceId}: ${JSON.stringify(params)}`);
+        },
+        onKey: (deviceId, params) => {
+          logger.debug(`[tabby-control] mirror key ${deviceId}: ${JSON.stringify(params)}`);
+        },
+      });
 
-    logger.info(
-      `[tabby-control] registered 6 device control tools. ` +
-      `WebSocket on ws://0.0.0.0:${config.wsPort}/phone, Mirror on ws://0.0.0.0:${config.wsPort}/mirror`,
-    );
+      const bridge = new InProcessBridge(coordinator, wsServer.getRegistry(), ipcNotifier);
+
+      startHttpServer(config.rpcPort, coordinator, bridge, ipcNotifier, logger);
+
+      function makeTool(factory: (bridge: InProcessBridge) => OpenClawTool) {
+        return (): OpenClawTool => {
+          const tool = factory(bridge);
+          tool.isAvailable = () => true;
+          return tool;
+        };
+      }
+
+      api.registerTool(makeTool(createDeviceListTool));
+      api.registerTool(makeTool(createExecuteTaskTool));
+      api.registerTool(makeTool(createExecuteTaskAllTool));
+      api.registerTool(makeTool(createExecuteBatchTool));
+      api.registerTool(makeTool(createCancelTaskTool));
+      api.registerTool(makeTool(createGetStatusTool));
+
+      logger.info(
+        `[tabby-control] registered 6 device control tools. ` +
+        `WebSocket on ws://0.0.0.0:${config.wsPort}/phone, Mirror on ws://0.0.0.0:${config.wsPort}/mirror`,
+      );
+    });
   },
 };

@@ -41,7 +41,7 @@ function formatTaskResult(result: TaskResult, deviceId: string): string {
     sections.push(`Device: ${deviceId}`);
     sections.push(`Progress: ${result.totalSteps ?? 0} steps`);
     sections.push(`\nQuestion from device: ${result.interactionMessage ?? result.message ?? 'Unknown'}`);
-    sections.push(`\nTo respond, call device:execute_task with:`);
+    sections.push(`\nTo respond, call device_execute_task with:`);
     sections.push(`- deviceId: "${deviceId}"`);
     sections.push(`- task: the original task description`);
     sections.push(`- sessionId: "${result.taskId}"`);
@@ -95,7 +95,7 @@ function formatBatchResults(results: Record<string, TaskResult>): string {
 
 export function createDeviceListTool(client: DeviceBridge) {
   return {
-    name: 'device:list',
+    name: 'device_list',
     label: 'List Connected Devices',
     description: [
       'List all Android devices currently connected to LobsterAI.',
@@ -109,7 +109,7 @@ export function createDeviceListTool(client: DeviceBridge) {
         return { content: [{ type: 'text', text: formatDevices(devices) }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text', text: `device:list failed: ${msg}` }], isError: true };
+        return { content: [{ type: 'text', text: `device_list failed: ${msg}` }], isError: true };
       }
     },
   };
@@ -117,7 +117,7 @@ export function createDeviceListTool(client: DeviceBridge) {
 
 export function createExecuteTaskTool(client: DeviceBridge) {
   return {
-    name: 'device:execute_task',
+    name: 'device_execute_task',
     label: 'Execute Task on Device',
     description: [
       'Send a natural language task to a connected Android device. The device runs its own',
@@ -127,7 +127,7 @@ export function createExecuteTaskTool(client: DeviceBridge) {
       'IMPORTANT: Send the ENTIRE task to the device in one call. Do NOT split the task',
       'into sub-steps yourself. The device handles all steps autonomously. For example,',
       'if the user says "open WeChat and send a message to Zhang San", send the full',
-      'task "打开微信给张三发消息：今晚吃饭吗" in one device:execute_task call.',
+      'task "打开微信给张三发消息：今晚吃饭吗" in one device_execute_task call.',
       '',
       '## Handling Interact Events',
       '',
@@ -137,7 +137,7 @@ export function createExecuteTaskTool(client: DeviceBridge) {
       'You should:',
       '1. Analyze the screenshot to understand the current screen state',
       '2. Make a decision about what to do next',
-      '3. Call device:execute_task with sessionId + guidance to resume the paused task',
+      '3. Call device_execute_task with sessionId + guidance to resume the paused task',
       '   (use the same task description, add your decision as the guidance parameter)',
       '',
       'Examples:',
@@ -150,7 +150,7 @@ export function createExecuteTaskTool(client: DeviceBridge) {
       properties: {
         deviceId: {
           type: 'string',
-          description: 'Device ID from device:list',
+          description: 'Device ID from device_list',
         },
         task: {
           type: 'string',
@@ -208,7 +208,7 @@ export function createExecuteTaskTool(client: DeviceBridge) {
         return { content: [{ type: 'text', text }], isError: !result.success };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text', text: `device:execute_task failed: ${msg}` }], isError: true };
+        return { content: [{ type: 'text', text: `device_execute_task failed: ${msg}` }], isError: true };
       }
     },
   };
@@ -216,7 +216,7 @@ export function createExecuteTaskTool(client: DeviceBridge) {
 
 export function createExecuteTaskAllTool(client: DeviceBridge) {
   return {
-    name: 'device:execute_task_all',
+    name: 'device_execute_task_all',
     label: 'Execute Task on All Idle Devices',
     description: [
       'Send the same natural language task to ALL currently idle connected devices simultaneously.',
@@ -254,7 +254,7 @@ export function createExecuteTaskAllTool(client: DeviceBridge) {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
-          content: [{ type: 'text', text: `device:execute_task_all failed: ${msg}` }],
+          content: [{ type: 'text', text: `device_execute_task_all failed: ${msg}` }],
           isError: true,
         };
       }
@@ -264,7 +264,7 @@ export function createExecuteTaskAllTool(client: DeviceBridge) {
 
 export function createExecuteBatchTool(client: DeviceBridge) {
   return {
-    name: 'device:execute_batch',
+    name: 'device_execute_batch',
     label: 'Execute Different Tasks on Multiple Devices',
     description: [
       'Send different natural language tasks to different devices at the same time.',
@@ -316,7 +316,7 @@ export function createExecuteBatchTool(client: DeviceBridge) {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
-          content: [{ type: 'text', text: `device:execute_batch failed: ${msg}` }],
+          content: [{ type: 'text', text: `device_execute_batch failed: ${msg}` }],
           isError: true,
         };
       }
@@ -326,7 +326,7 @@ export function createExecuteBatchTool(client: DeviceBridge) {
 
 export function createCancelTaskTool(client: DeviceBridge) {
   return {
-    name: 'device:cancel_task',
+    name: 'device_cancel_task',
     label: 'Cancel Running Task',
     description:
       'Cancel a currently running task on a specified device. Use after observing a task going wrong.',
@@ -359,7 +359,7 @@ export function createCancelTaskTool(client: DeviceBridge) {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
-          content: [{ type: 'text', text: `device:cancel_task failed: ${msg}` }],
+          content: [{ type: 'text', text: `device_cancel_task failed: ${msg}` }],
           isError: true,
         };
       }
@@ -369,7 +369,7 @@ export function createCancelTaskTool(client: DeviceBridge) {
 
 export function createGetStatusTool(client: DeviceBridge) {
   return {
-    name: 'device:get_status',
+    name: 'device_get_status',
     label: 'Get Device Detailed Status',
     description:
       'Get detailed status of a specific device including current app, running task, and connection info.',
@@ -378,7 +378,7 @@ export function createGetStatusTool(client: DeviceBridge) {
       properties: {
         deviceId: {
           type: 'string',
-          description: 'Device ID from device:list',
+          description: 'Device ID from device_list',
         },
       },
       required: ['deviceId'],
@@ -412,7 +412,7 @@ export function createGetStatusTool(client: DeviceBridge) {
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
-          content: [{ type: 'text', text: `device:get_status failed: ${msg}` }],
+          content: [{ type: 'text', text: `device_get_status failed: ${msg}` }],
           isError: true,
         };
       }
