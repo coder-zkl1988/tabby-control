@@ -33,11 +33,26 @@ export interface DeviceSession {
   ws: WebSocket;
   info: DeviceInfo;
   lastSnapshot?: MirrorSnapshot;
+  /** Timestamp when the device was marked as reconnecting (WS closed but within grace period). */
+  reconnectingAt?: number;
+  /** Timer for the reconnect grace period — fires after RECONNECT_GRACE_MS. */
+  graceTimer?: ReturnType<typeof setTimeout>;
+  /** Tracks the last time we received any message or pong from this device. */
+  lastActivityAt: number;
 }
 
 // ─── DeviceRegistry ──────────────────────────────────────────────────────────
 
 type DeviceChangeCallback = (devices: DeviceInfo[]) => void;
+
+// ── Heartbeat & grace period constants ────────────────────────────────────────
+
+/** Server-side ping interval (ms). Sends a WS ping to each device. */
+const HEARTBEAT_INTERVAL_MS = 15_000;
+/** If no pong (or any message) received within this window, mark device as reconnecting. */
+const HEARTBEAT_TIMEOUT_MS = 30_000;
+/** After a WS close, keep the device in the registry for this long to allow reconnection. */
+const RECONNECT_GRACE_MS = 30_000;
 
 // ── Human-readable unit conversion helpers ─────────────────────────────────────
 
@@ -70,6 +85,27 @@ export class DeviceRegistry {
 
   register(deviceId: string, ws: WebSocket, capabilities?: DeviceCapabilities): DeviceSession {
     const now = Date.now();
+
+    // If a grace-period entry exists for this deviceId, restore it instead of creating fresh.
+    const existing = this.devices.get(deviceId);
+    if (existing) {
+      // Clear the grace timer — the device reconnected in time.
+      if (existing.graceTimer) {
+        clearTimeout(existing.graceTimer);
+      }
+      existing.ws = ws;
+      existing.info = {
+        ...existing.info,
+        status: 'idle',
+        lastSeen: now,
+      };
+      existing.reconnectingAt = undefined;
+      existing.graceTimer = undefined;
+      existing.lastActivityAt = now;
+      this.notifyChange();
+      return existing;
+    }
+
     const session: DeviceSession = {
       deviceId,
       ws,
@@ -95,6 +131,7 @@ export class DeviceRegistry {
         wifiSsid: capabilities?.wifiSsid,
         isWifiConnected: capabilities?.isWifiConnected,
       },
+      lastActivityAt: now,
     };
     this.devices.set(deviceId, session);
     this.notifyChange();
@@ -126,6 +163,7 @@ export class DeviceRegistry {
       availableStorage: formatBytes(patch.availableStorage as number | undefined),
     };
     s.info = { ...s.info, ...converted, lastSeen: Date.now() };
+    s.lastActivityAt = Date.now();
     this.notifyChange();
   }
 
@@ -139,11 +177,19 @@ export class DeviceRegistry {
       status: snapshot.deviceStatus,
       lastSeen: snapshot.timestamp,
     };
+    s.lastActivityAt = Date.now();
     this.notifyChange();
 
     const payload = JSON.stringify({ channel: 'mirror', ...snapshot });
     for (const ws of this.mirrorForwarders.get(deviceId) ?? []) {
       if (ws.readyState === WebSocket.OPEN) {
+        // If the socket has buffered data (backlog), skip this frame
+        // to keep the mirror as close to real-time as possible.
+        const buffered = ws.bufferedAmount;
+        if (buffered > 0) {
+          // Drop this frame — a newer one will follow
+          continue;
+        }
         ws.send(payload);
       }
     }
@@ -153,6 +199,35 @@ export class DeviceRegistry {
     if (this.devices.delete(deviceId)) {
       this.notifyChange();
     }
+  }
+
+  /**
+   * Instead of immediately removing a device on WS close, start a grace period.
+   * If the device reconnects within RECONNECT_GRACE_MS, the session is restored.
+   * Otherwise the device is removed for real.
+   */
+  scheduleGraceRemoval(deviceId: string): void {
+    const s = this.devices.get(deviceId);
+    if (!s) return;
+
+    // Mark as reconnecting so the UI can show a "reconnecting" state
+    s.reconnectingAt = Date.now();
+    s.info.status = 'idle'; // keep idle so UI still shows the card
+    this.notifyChange();
+
+    // Clear any existing grace timer
+    if (s.graceTimer) {
+      clearTimeout(s.graceTimer);
+    }
+
+    s.graceTimer = setTimeout(() => {
+      const current = this.devices.get(deviceId);
+      // Only remove if still in grace period (not reconnected)
+      if (current && current.reconnectingAt) {
+        this.devices.delete(deviceId);
+        this.notifyChange();
+      }
+    }, RECONNECT_GRACE_MS);
   }
 
   onDeviceChange(callback: DeviceChangeCallback): () => void {
@@ -333,7 +408,32 @@ export class WsServer {
       }
     }, 15_000);
 
+    // ── Heartbeat: track activity and ping periodically ──────────────────────
+    let lastActivity = Date.now();
+
+    const heartbeatInterval = setInterval(() => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+      // Check if we've exceeded the timeout
+      if (Date.now() - lastActivity > HEARTBEAT_TIMEOUT_MS) {
+        console.log(`[tabby-control] heartbeat timeout for device=${deviceId}, terminating`);
+        ws.terminate();
+        return;
+      }
+      // Send a ping
+      ws.ping();
+    }, HEARTBEAT_INTERVAL_MS);
+
+    ws.on('pong', () => {
+      lastActivity = Date.now();
+      // Update registry activity tracking
+      if (deviceId) {
+        const s = this.registry.get(deviceId);
+        if (s) s.lastActivityAt = Date.now();
+      }
+    });
+
     ws.on('message', (data) => {
+      lastActivity = Date.now();
       try {
         const raw = data.toString();
         const msg = JSON.parse(raw) as Record<string, unknown>;
@@ -385,10 +485,12 @@ export class WsServer {
 
     ws.on('close', () => {
       clearTimeout(authTimeout);
+      clearInterval(heartbeatInterval);
       if (deviceId) {
-        this.registry.remove(deviceId);
+        // Start grace period instead of immediate removal
+        this.registry.scheduleGraceRemoval(deviceId);
         this.ipcNotifier('device:disconnected', { deviceId });
-        console.log(`[tabby-control] device disconnected: ${deviceId}`);
+        console.log(`[tabby-control] device disconnected (grace period started): ${deviceId}`);
       }
     });
 

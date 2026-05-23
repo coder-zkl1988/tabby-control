@@ -8,8 +8,8 @@
 import { createServer, type Server as HTTPServer } from 'http';
 import { WsServer } from './ws-server.js';
 import { TaskCoordinator } from './task-coordinator.js';
-
-import type { TaskResult } from './protocol.js';
+import { BridgeClient } from './bridge.js';
+import type { DeviceBridge, TaskResult } from './protocol.js';
 import {
   createDeviceListTool,
   createExecuteTaskTool,
@@ -145,31 +145,31 @@ function startHttpServer(
           let result: unknown;
 
           switch (method) {
-            case 'device.list':
+            case 'device_list':
               result = await bridge.listDevices();
               break;
-            case 'device.execute_task':
+            case 'device_execute_task':
               result = await coordinator.executeTask(
                 params.deviceId as string,
                 params.task as string,
                 params.timeoutMs as number ?? 300_000,
               );
               break;
-            case 'device.execute_task_all':
+            case 'device_execute_task_all':
               result = Object.fromEntries(
                 await coordinator.executeTaskAll(params.task as string, params.timeoutMs as number ?? 300_000),
               );
               break;
-            case 'device.execute_batch':
+            case 'device_execute_batch':
               result = Object.fromEntries(
                 await coordinator.executeBatch(params.tasks as Array<{ deviceId: string; task: string }>, params.timeoutMs as number ?? 300_000),
               );
               break;
-            case 'device.cancel_task':
+            case 'device_cancel_task':
               coordinator.cancelTask(params.deviceId as string, params.taskId as string);
               result = { cancelled: true };
               break;
-            case 'device.get_status':
+            case 'device_get_status':
               result = coordinator.getDeviceStatus(params.deviceId as string);
               break;
             default:
@@ -247,75 +247,85 @@ export default {
     });
     wsServer.attachToServer(httpServer);
 
-    // Tabby may load plugins through both [gateway] and [plugins]
-    // registries across different workers.  When the port is already
-    // bound, skip the rest of initialisation — the first worker's
-    // registry already has the live device state and tools.
-    let portBound = false;
-    httpServer.listen(config.wsPort, '0.0.0.0', () => {
-      portBound = true;
-      logger.info(`[tabby-control] WebSocket server listening on ws://0.0.0.0:${config.wsPort}/phone`);
-    });
-    httpServer.on('error', (err) => {
-      logger.warn(`[tabby-control] port ${config.wsPort} unavailable (${(err as Error & { code?: string }).code ?? (err as Error).message}) — skipping duplicate initialisation`);
-    });
+    // Register tools synchronously so OpenClaw's descriptor cache
+    // captures them (snapshot happens right after register() returns).
+    // The bridge resolves lazily on first use — in-process when the
+    // port is available (gateway worker), or HTTP to port 18801 when
+    // it's already bound (agent worker hitting EADDRINUSE).
 
-    // listen() is async; if the port is already in use the callback
-    // never fires.  Wait a tick for the result.
-    const initDone = new Promise<boolean>((resolve) => {
-      httpServer.on('listening', () => resolve(true));
-      httpServer.on('error', () => resolve(false));
-      // also catch pre-listen errors
-    });
+    class LazyBridge implements DeviceBridge {
+      private _bridge: DeviceBridge | null = null;
+      private _pending: Promise<DeviceBridge>;
 
-    initDone.then((ok) => {
-      if (!ok) {
-        logger.warn('[tabby-control] port unavailable — tools not registered (already loaded by another worker)');
-        return;
+      constructor(promise: Promise<DeviceBridge>) { this._pending = promise; }
+      private async _get(): Promise<DeviceBridge> {
+        if (!this._bridge) this._bridge = await this._pending;
+        return this._bridge;
       }
+      async ping() { return (await this._get()).ping(); }
+      async listDevices() { return (await this._get()).listDevices(); }
+      async executeTask(deviceId: string, task: string, timeoutMs?: number, guidance?: string, sessionId?: string, maxSteps?: number, allowedActions?: string[], allowedApps?: string[]): Promise<TaskResult> {
+        return (await this._get()).executeTask(deviceId, task, timeoutMs, guidance, sessionId, maxSteps, allowedActions, allowedApps);
+      }
+      async executeTaskAll(task: string, timeoutMs?: number) { return (await this._get()).executeTaskAll(task, timeoutMs); }
+      async executeBatch(tasks: Array<{ deviceId: string; task: string }>, timeoutMs?: number) { return (await this._get()).executeBatch(tasks, timeoutMs); }
+      async cancelTask(deviceId: string, taskId: string) { return (await this._get()).cancelTask(deviceId, taskId); }
+      async getStatus(deviceId: string) { return (await this._get()).getStatus(deviceId); }
+    }
 
-      const coordinator = new TaskCoordinator(wsServer, ipcNotifier);
-
-      wsServer.setTaskMessageHandler(coordinator.handleTaskMessage.bind(coordinator));
-
-      wsServer.setMirrorHandler({
-        onClick: (deviceId, params) => {
-          logger.debug(`[tabby-control] mirror click ${deviceId}: ${JSON.stringify(params)}`);
-        },
-        onSwipe: (deviceId, params) => {
-          logger.debug(`[tabby-control] mirror swipe ${deviceId}: ${JSON.stringify(params)}`);
-        },
-        onText: (deviceId, params) => {
-          logger.debug(`[tabby-control] mirror text ${deviceId}: ${JSON.stringify(params)}`);
-        },
-        onKey: (deviceId, params) => {
-          logger.debug(`[tabby-control] mirror key ${deviceId}: ${JSON.stringify(params)}`);
-        },
+    const bridgePromise = new Promise<DeviceBridge>((resolve) => {
+      httpServer.once('listening', () => {
+        // Gateway worker: port available → full setup
+        const coordinator = new TaskCoordinator(wsServer, ipcNotifier);
+        wsServer.setTaskMessageHandler(coordinator.handleTaskMessage.bind(coordinator));
+        wsServer.setMirrorHandler({
+          onClick: (deviceId: string, params: Record<string, unknown>) => {
+            logger.debug(`[tabby-control] mirror click ${deviceId}: ${JSON.stringify(params)}`);
+          },
+          onSwipe: (deviceId: string, params: Record<string, unknown>) => {
+            logger.debug(`[tabby-control] mirror swipe ${deviceId}: ${JSON.stringify(params)}`);
+          },
+          onText: (deviceId: string, params: Record<string, unknown>) => {
+            logger.debug(`[tabby-control] mirror text ${deviceId}: ${JSON.stringify(params)}`);
+          },
+          onKey: (deviceId: string, params: Record<string, unknown>) => {
+            logger.debug(`[tabby-control] mirror key ${deviceId}: ${JSON.stringify(params)}`);
+          },
+        });
+        const inProcess = new InProcessBridge(coordinator, wsServer.getRegistry(), ipcNotifier);
+        startHttpServer(config.rpcPort, coordinator, inProcess, ipcNotifier, logger);
+        logger.info(`[tabby-control] WebSocket on ws://0.0.0.0:${config.wsPort}/phone, Mirror on ws://0.0.0.0:${config.wsPort}/mirror`);
+        resolve(inProcess);
       });
+      httpServer.once('error', () => {
+        // Agent / other worker: port unavailable → HTTP bridge
+        logger.warn(`[tabby-control] port ${config.wsPort} unavailable (EADDRINUSE) — using HTTP bridge`);
+        resolve(new BridgeClient(config.rpcPort));
+      });
+    });
 
-      const bridge = new InProcessBridge(coordinator, wsServer.getRegistry(), ipcNotifier);
+    const lazyBridge = new LazyBridge(bridgePromise);
 
-      startHttpServer(config.rpcPort, coordinator, bridge, ipcNotifier, logger);
+    function makeTool(factory: (bridge: DeviceBridge) => TabbyTool) {
+      return (): TabbyTool => {
+        const tool = factory(lazyBridge);
+        tool.isAvailable = () => true;
+        return tool;
+      };
+    }
 
-      function makeTool(factory: (bridge: InProcessBridge) => TabbyTool) {
-        return (): TabbyTool => {
-          const tool = factory(bridge);
-          tool.isAvailable = () => true;
-          return tool;
-        };
-      }
+    api.registerTool(makeTool(createDeviceListTool));
+    api.registerTool(makeTool(createExecuteTaskTool));
+    api.registerTool(makeTool(createExecuteTaskAllTool));
+    api.registerTool(makeTool(createExecuteBatchTool));
+    api.registerTool(makeTool(createCancelTaskTool));
+    api.registerTool(makeTool(createGetStatusTool));
 
-      api.registerTool(makeTool(createDeviceListTool));
-      api.registerTool(makeTool(createExecuteTaskTool));
-      api.registerTool(makeTool(createExecuteTaskAllTool));
-      api.registerTool(makeTool(createExecuteBatchTool));
-      api.registerTool(makeTool(createCancelTaskTool));
-      api.registerTool(makeTool(createGetStatusTool));
+    logger.info('[tabby-control] registered 6 device control tools (lazy bridge)');
 
-      logger.info(
-        `[tabby-control] registered 6 device control tools. ` +
-        `WebSocket on ws://0.0.0.0:${config.wsPort}/phone, Mirror on ws://0.0.0.0:${config.wsPort}/mirror`,
-      );
+    // Start server in background
+    httpServer.listen(config.wsPort, '0.0.0.0', () => {
+      logger.info(`[tabby-control] WebSocket server listening on ws://0.0.0.0:${config.wsPort}/phone`);
     });
   },
 };

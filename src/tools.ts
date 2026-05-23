@@ -102,7 +102,7 @@ export function createDeviceListTool(client: DeviceBridge) {
       'Returns device ID, model, OS version, screen size, status (idle/busy/error), and current app.',
       'Use this first to discover available devices before sending tasks.',
     ].join(' '),
-    parameters: {},
+    parameters: { type: "object", properties: {} },
     async execute(): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
       try {
         const devices = await client.listDevices();

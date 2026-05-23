@@ -147,7 +147,9 @@ export type DeviceStatus = z.infer<typeof DeviceStatusSchema>;
 
 export const MirrorSnapshotSchema = z.object({
   type: z.enum(['snapshot', 'realtime']),
-  screenshot: z.string(), // base64 PNG
+  screenshot: z.string(), // base64 PNG or JPEG
+  /** Image format of the screenshot. Defaults to 'png' for backward compatibility. */
+  format: z.enum(['png', 'jpeg']).default('png'),
   width: z.number().int().positive(),
   height: z.number().int().positive(),
   timestamp: TimestampSchema,

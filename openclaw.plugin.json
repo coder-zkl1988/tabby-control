@@ -2,6 +2,19 @@
   "id": "tabby-control",
   "name": "TabbyControl",
   "description": "通过 WebSocket 控制 Android 设备。Tabby 下发自然语言任务，手机端自主执行。",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "tools": [
+      "device_list",
+      "device_execute_task",
+      "device_execute_task_all",
+      "device_execute_batch",
+      "device_cancel_task",
+      "device_get_status"
+    ]
+  },
   "configSchema": {
     "type": "object",
     "additionalProperties": false,
