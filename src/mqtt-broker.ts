@@ -115,10 +115,24 @@ export class MqttBroker {
   ): void {
     const deviceId = client.id?.startsWith('phone/') ? client.id.slice(6) : null;
     if (!deviceId) {
-      // Non-phone clients (browser viewers): read-only access to observation topics
-      const suffix = sub.topic.split('/').pop() ?? '';
-      const allowed = MqttBroker.READONLY_SUFFIXES.includes(suffix);
-      done(null, allowed);
+      // Non-phone MQTT clients: require a valid deviceId in the topic AND a
+      // read-only suffix. This prevents cross-device snooping — without this
+      // check, any LAN MQTT client could subscribe to phone/{any}/frame and
+      // receive all mirror feeds, since READONLY_SUFFIXES alone doesn't scope
+      // to a specific device.
+      const parts = sub.topic.split('/');
+      if (
+        parts.length === 3 &&
+        parts[0] === 'phone' &&
+        this.registry.get(parts[1])
+      ) {
+        const suffix = parts[2];
+        if (MqttBroker.READONLY_SUFFIXES.includes(suffix)) {
+          done(null, true);
+          return;
+        }
+      }
+      done(null, false);
       return;
     }
     const allowed = sub.topic.startsWith(`phone/${deviceId}/`);
