@@ -33,6 +33,8 @@ export interface DeviceSession {
   ws: WebSocket;
   info: DeviceInfo;
   lastSnapshot?: MirrorSnapshot;
+  /** Raw binary frame buffer (MQTT path) — avoids base64 re-encoding for native consumers */
+  lastFrameBuffer?: Buffer;
   /** Timestamp when the device was marked as reconnecting (WS closed but within grace period). */
   reconnectingAt?: number;
   /** Timer for the reconnect grace period — fires after RECONNECT_GRACE_MS. */

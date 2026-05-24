@@ -1,18 +1,19 @@
 #!/usr/bin/env node
 /**
- * tabby-control — Standalone device control service
+ * tabby-control — Standalone device control service (MQTT edition)
  *
- * Starts WebSocket server (phone connections) + HTTP RPC server (controller queries)
- * without requiring Tabby plugin infrastructure.
+ * Starts MQTT broker (phone + browser) + HTTP RPC server (controller queries).
  *
  * Usage:
- *   node dist/standalone.js              # defaults: wsPort=18800 rpcPort=18801
- *   node dist/standalone.js --ws-port 19000 --rpc-port 19001
+ *   node dist/standalone.js                         # defaults: mqttPort=18883 rpcPort=18801
+ *   node dist/standalone.js --mqtt-port 19083 --rpc-port 19001
  */
 
 import { createServer } from 'http';
-import { WsServer } from './ws-server.js';
+import { DeviceRegistry, WsServer } from './ws-server.js';
 import { TaskCoordinator } from './task-coordinator.js';
+import { MqttBroker } from './mqtt-broker.js';
+import { MqttPhoneProxy } from './mqtt-phone-proxy.js';
 
 function parseArgs() {
   const args = process.argv.slice(2);
@@ -25,33 +26,61 @@ function parseArgs() {
     }
   }
   return {
-    wsPort: parseInt(opts.wsport ?? '18800', 10),
+    mqttPort: parseInt(opts.mqttport ?? '18883', 10),
     rpcPort: parseInt(opts.rpcport ?? '18801', 10),
   };
 }
 
 function log(level: string, msg: string) {
-  // stderr so stdout stays clean for MCP mode
   process.stderr.write(`[tabby-control] ${level} ${msg}\n`);
 }
 
 async function main() {
-  const { wsPort, rpcPort } = parseArgs();
+  const { mqttPort, rpcPort } = parseArgs();
   const ipcNotifier = (_channel: string, _data: unknown) => {};
 
-  // ── Start WebSocket server for phone connections ──
-  const wsServer = new WsServer(wsPort, ipcNotifier);
-  const coordinator = new TaskCoordinator(wsServer, ipcNotifier);
-  wsServer.setTaskMessageHandler(coordinator.handleTaskMessage.bind(coordinator));
+  // ── Device registry (shared) ──
+  const registry = new DeviceRegistry();
 
-  // Listen on the WebSocket port
-  const phoneServer = createServer();
-  wsServer.attachToServer(phoneServer);
-  phoneServer.listen(wsPort, '0.0.0.0', () => {
-    log('info', `WebSocket server listening on ws://0.0.0.0:${wsPort}/phone`);
-  });
+  // ── Start MQTT broker ──
+  const mqttBroker = new MqttBroker(mqttPort, registry);
+  await mqttBroker.start();
+  log('info', `MQTT broker listening on mqtt://0.0.0.0:${mqttPort} (tcp+ws)`);
 
-  // ── Start HTTP RPC server for controller/Tabby queries ──
+  // ── WsServer shim (sendToDevice filled in after proxy creation) ──
+  let proxy: MqttPhoneProxy;
+
+  const wsServerShim = {
+    getRegistry: () => registry,
+    sendToDevice: (deviceId: string, msg: Record<string, unknown>) => {
+      const channel = (msg as { channel?: string }).channel;
+      if (channel === 'task') {
+        const method = (msg as { method?: string }).method;
+        const params = (msg as { params?: Record<string, unknown> }).params;
+        if (method === 'agent.execute' && params && proxy) {
+          proxy.publishTask(deviceId, params as never);
+        } else if (method === 'agent.cancel' && params && proxy) {
+          proxy.publishCancel(deviceId, (params as { taskId: string }).taskId);
+        }
+      }
+    },
+  };
+
+  // ── Task coordinator ──
+  const coordinator = new TaskCoordinator(
+    wsServerShim as unknown as WsServer,
+    ipcNotifier,
+  );
+
+  // ── MQTT phone proxy (bridges MQTT → registry/coordinator) ──
+  proxy = new MqttPhoneProxy(
+    mqttBroker,
+    registry,
+    coordinator.handleTaskMessage.bind(coordinator),
+    ipcNotifier,
+  );
+
+  // ── Start HTTP RPC server ──
   const rpcServer = createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
@@ -63,12 +92,12 @@ async function main() {
 
     if (url.pathname === '/health' && req.method === 'GET') {
       res.writeHead(200, { 'Content-Type': 'application/json' });
-      res.end(JSON.stringify({ status: 'ok', wsPort, rpcPort }));
+      res.end(JSON.stringify({ status: 'ok', mqttPort, rpcPort }));
       return;
     }
 
     if (url.pathname === '/devices' && req.method === 'GET') {
-      const devices = wsServer.getRegistry().list();
+      const devices = registry.list();
       res.writeHead(200, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ devices }));
       return;
@@ -84,7 +113,7 @@ async function main() {
 
           switch (method) {
             case 'device.list':
-              result = wsServer.getRegistry().list();
+              result = registry.list();
               break;
             case 'device.get_status':
               result = coordinator.getDeviceStatus(params.deviceId as string);
@@ -117,6 +146,14 @@ async function main() {
       return;
     }
 
+    // Device QR config endpoint — phone fetches after scanning
+    if (url.pathname === '/config' && req.method === 'GET') {
+      const deviceId = url.searchParams.get('deviceId') ?? undefined;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ mqttPort, deviceId }));
+      return;
+    }
+
     res.writeHead(404);
     res.end();
   });
@@ -125,13 +162,12 @@ async function main() {
     log('info', `RPC server listening on http://0.0.0.0:${rpcPort}`);
   });
 
-  log('info', `tabby-control standalone started (wsPort=${wsPort}, rpcPort=${rpcPort})`);
+  log('info', `tabby-control standalone started (mqttPort=${mqttPort}, rpcPort=${rpcPort})`);
 
   // Graceful shutdown
-  const shutdown = () => {
+  const shutdown = async () => {
     log('info', 'shutting down...');
-    wsServer.stop();
-    phoneServer.close();
+    await mqttBroker.stop();
     rpcServer.close();
     process.exit(0);
   };

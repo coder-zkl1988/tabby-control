@@ -6,8 +6,10 @@
  */
 
 import { createServer, type Server as HTTPServer } from 'http';
-import { WsServer } from './ws-server.js';
+import { WsServer, DeviceRegistry } from './ws-server.js';
 import { TaskCoordinator } from './task-coordinator.js';
+import { MqttBroker } from './mqtt-broker.js';
+import { MqttPhoneProxy } from './mqtt-phone-proxy.js';
 import { BridgeClient } from './bridge.js';
 import type { DeviceBridge, TaskResult } from './protocol.js';
 import {
@@ -22,7 +24,7 @@ import {
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG = {
-  wsPort: 18800,
+  mqttPort: 18883,
   rpcPort: 18801,
 };
 
@@ -226,7 +228,8 @@ export default {
     const logger = api.logger;
     logger.info(`[tabby-control] pluginConfig: ${JSON.stringify(pluginConfig)}`);
     const config = {
-      wsPort: typeof pluginConfig.wsPort === 'number' ? pluginConfig.wsPort : DEFAULT_CONFIG.wsPort,
+      wsPort: typeof pluginConfig.wsPort === 'number' ? pluginConfig.wsPort : 18790,
+      mqttPort: typeof pluginConfig.mqttPort === 'number' ? pluginConfig.mqttPort : DEFAULT_CONFIG.mqttPort,
       rpcPort: typeof pluginConfig.rpcPort === 'number' ? pluginConfig.rpcPort : DEFAULT_CONFIG.rpcPort,
     };
 

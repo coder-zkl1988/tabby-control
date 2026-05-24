@@ -149,7 +149,7 @@ export const MirrorSnapshotSchema = z.object({
   type: z.enum(['snapshot', 'realtime']),
   screenshot: z.string(), // base64 PNG or JPEG
   /** Image format of the screenshot. Defaults to 'png' for backward compatibility. */
-  format: z.enum(['png', 'jpeg']).default('png'),
+  format: z.enum(['png', 'jpeg', 'webp']).default('png'),
   width: z.number().int().positive(),
   height: z.number().int().positive(),
   timestamp: TimestampSchema,
@@ -245,15 +245,6 @@ export const DeviceErrorCodeSchema = z.enum([
 ]);
 export type DeviceErrorCode = z.infer<typeof DeviceErrorCodeSchema>;
 
-// ─── Config ─────────────────────────────────────────────────────────────────
-
-export const PluginConfigSchema = z.object({
-  wsPort: z.number().int().min(1024).max(65535).default(18790),
-  authTokenLifetime: z.number().int().positive().default(86400),
-  maxDevices: z.number().int().positive().default(3),
-});
-export type PluginConfig = z.infer<typeof PluginConfigSchema>;
-
 // ─── DeviceBridge interface ──────────────────────────────────────────────────────
 //
 // Shared interface for both BridgeClient (HTTP) and InProcessBridge (direct call).
@@ -268,3 +259,53 @@ export interface DeviceBridge {
   cancelTask(deviceId: string, taskId: string): Promise<void>;
   getStatus(deviceId: string): Promise<DeviceInfo | null>;
 }
+
+// ─── MQTT Topics ──────────────────────────────────────────────────────────────
+
+export const MQTT_TOPIC_PREFIX = 'phone';
+
+export function mqttTopic(deviceId: string, suffix: string): string {
+  return `${MQTT_TOPIC_PREFIX}/${deviceId}/${suffix}`;
+}
+
+export const MQTT_SUFFIXES = {
+  HELLO: 'hello',
+  TASK: 'task',
+  CANCEL: 'cancel',
+  STATUS: 'status',
+  FRAME: 'frame',
+  PROGRESS: 'progress',
+  RESULT: 'result',
+  LOG: 'log',
+  MIRROR_CMD: 'mirror_cmd',
+} as const;
+
+// ─── MQTT Frame (binary+JSON header) ─────────────────────────────────────────
+
+export const FrameHeaderSchema = z.object({
+  seq: z.number().int().nonnegative(),
+  ts: z.number().int().positive(),
+  w: z.number().int().positive(),
+  h: z.number().int().positive(),
+  app: z.string().optional(),
+  status: z.enum(['idle', 'busy', 'error']).default('idle'),
+  fmt: z.enum(['jpeg', 'webp']).default('jpeg'),
+  len: z.number().int().positive(),
+});
+export type FrameHeader = z.infer<typeof FrameHeaderSchema>;
+
+/** Separator between JSON header and binary data in MQTT frame messages */
+export const FRAME_HEADER_SEPARATOR = '\n';
+
+// ─── MQTT Config ─────────────────────────────────────────────────────────────
+
+export const MqttConfigSchema = z.object({
+  mqttPort: z.number().int().min(1024).max(65535).default(18883),
+});
+
+export const PluginConfigSchema = z.object({
+  wsPort: z.number().int().min(1024).max(65535).default(18790),
+  authTokenLifetime: z.number().int().positive().default(86400),
+  maxDevices: z.number().int().positive().default(3),
+}).merge(MqttConfigSchema);
+export type PluginConfig = z.infer<typeof PluginConfigSchema>;

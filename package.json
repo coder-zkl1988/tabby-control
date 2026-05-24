@@ -27,6 +27,14 @@
     "./bridge": {
       "import": "./dist/bridge.js",
       "types": "./dist/bridge.d.ts"
+    },
+    "./mqtt-broker": {
+      "import": "./dist/mqtt-broker.js",
+      "types": "./dist/mqtt-broker.d.ts"
+    },
+    "./mqtt-phone-proxy": {
+      "import": "./dist/mqtt-phone-proxy.js",
+      "types": "./dist/mqtt-phone-proxy.d.ts"
     }
   },
   "files": [
@@ -60,6 +68,7 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
+    "aedes": "^1.0.2",
     "ws": "^8.18.0",
     "zod": "^3.23.8"
   }
