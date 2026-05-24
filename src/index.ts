@@ -239,6 +239,12 @@ export default {
 
     const wsServer = new WsServer(config.wsPort, ipcNotifier);
 
+    const mqttRegistry = wsServer.getRegistry();
+    const mqttBroker = new MqttBroker(config.mqttPort, mqttRegistry);
+    void mqttBroker.start().then(() => {
+      logger.info(`[tabby-control] MQTT broker on mqtt://0.0.0.0:${config.mqttPort} (tcp+ws)`);
+    });
+
     const httpServer = createServer((req, res) => {
       if (req.url === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
@@ -295,9 +301,13 @@ export default {
             logger.debug(`[tabby-control] mirror key ${deviceId}: ${JSON.stringify(params)}`);
           },
         });
+
+        // MQTT proxy: bridge MQTT messages into coordinator/registry
+        new MqttPhoneProxy(mqttBroker, wsServer.getRegistry(), coordinator.handleTaskMessage.bind(coordinator), ipcNotifier);
+
         const inProcess = new InProcessBridge(coordinator, wsServer.getRegistry(), ipcNotifier);
         startHttpServer(config.rpcPort, coordinator, inProcess, ipcNotifier, logger);
-        logger.info(`[tabby-control] WebSocket on ws://0.0.0.0:${config.wsPort}/phone, Mirror on ws://0.0.0.0:${config.wsPort}/mirror`);
+        logger.info(`[tabby-control] MQTT on mqtt://0.0.0.0:${config.mqttPort}, WebSocket on ws://0.0.0.0:${config.wsPort}/phone`);
         resolve(inProcess);
       });
       httpServer.once('error', () => {
