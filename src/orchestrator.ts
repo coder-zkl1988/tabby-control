@@ -1,15 +1,7 @@
 import type { TaskCoordinator } from './task-coordinator.js';
 import type { SkillManager } from './skill-manager.js';
-import type { SubTaskResult, SubTaskExecuteParams, SkillHint, SubTaskStatus } from './protocol.js';
+import type { OrchestrationResult, SubTaskExecuteParams, SkillHint, SubTaskStatus } from './protocol.js';
 import type { AppSkill, Operation, SkillStep, StrategyChain } from './skill-types.js';
-
-export interface OrchestrationResult {
-  success: boolean;
-  message: string;
-  completedSubTasks: string[];
-  failedSubTasks: string[];
-  screenshots: string[];
-}
 
 interface SubTaskPlan {
   subtaskId: string;
@@ -21,11 +13,27 @@ interface SubTaskPlan {
   phase?: 'fill' | 'execute'; // for requiresConfirmation ops
 }
 
+interface OrchestrationState {
+  deviceId: string;
+  taskId: string;
+  currentSubTaskIdx: number;
+  plans: SubTaskPlan[];
+  operation: Operation;
+  completed: string[];
+  failed: string[];
+  screenshots: string[];
+  startTime: number;
+  timeoutMs: number;
+  currentApp: string;
+}
+
 export class Orchestrator {
   constructor(
     private coordinator: TaskCoordinator,
     private skillManager: SkillManager,
   ) {}
+
+  private activeOrchestrations = new Map<string, OrchestrationState>();
 
   /**
    * Execute a user task using skill-based orchestration per spec §6.
@@ -55,6 +63,7 @@ export class Orchestrator {
       return {
         success: result.success,
         message: result.message ?? '',
+        status: result.success ? 'completed' : 'failed',
         completedSubTasks: result.success ? ['whole_task'] : [],
         failedSubTasks: result.success ? [] : ['whole_task'],
         screenshots: result.finalScreenshot ? [result.finalScreenshot] : [],
@@ -70,6 +79,7 @@ export class Orchestrator {
       return {
         success: result.success,
         message: result.message ?? '',
+        status: result.success ? 'completed' : 'failed',
         completedSubTasks: result.success ? ['whole_task'] : [],
         failedSubTasks: result.success ? [] : ['whole_task'],
         screenshots: result.finalScreenshot ? [result.finalScreenshot] : [],
@@ -82,6 +92,7 @@ export class Orchestrator {
       return {
         success: false,
         message: `Operation "${operationName}" not found in skill`,
+        status: 'failed',
         completedSubTasks: [],
         failedSubTasks: [],
         screenshots: [],
@@ -93,10 +104,100 @@ export class Orchestrator {
     // 4. Split into sub-tasks
     const plans = this.splitOperationIntoSubTasks(taskId, operation, task);
     
-    // 5. Execute sequentially with dynamic adjustment
+    // 5. Execute via shared orchestration loop
+    return this.runRemainingPlans(
+      deviceId, taskId, plans, operation, 0,
+      completed, failed, screenshots, startTime, timeoutMs, currentApp,
+    );
+  }
+
+  /**
+   * Resume a paused orchestration after user confirms or cancels.
+   */
+  async resumeOrchestration(
+    deviceId: string,
+    taskId: string,
+    subtaskId: string,
+    confirmed: boolean,
+  ): Promise<OrchestrationResult> {
+    const state = this.activeOrchestrations.get(taskId);
+    if (!state) {
+      return {
+        success: false,
+        message: 'No paused orchestration found for this task',
+        status: 'failed',
+        completedSubTasks: [],
+        failedSubTasks: [],
+        screenshots: [],
+      };
+    }
+
+    if (confirmed) {
+      console.log(`[Orchestrator] Resuming orchestration ${taskId} from subtask ${subtaskId}`);
+      const resumeIdx = state.plans.findIndex(p => p.subtaskId === subtaskId);
+      if (resumeIdx < 0) {
+        this.activeOrchestrations.delete(taskId);
+        return {
+          success: false,
+          message: `Subtask ${subtaskId} not found in orchestration plans`,
+          status: 'failed',
+          completedSubTasks: [...state.completed],
+          failedSubTasks: [...state.failed],
+          screenshots: [...state.screenshots],
+        };
+      }
+
+      const result = await this.runRemainingPlans(
+        state.deviceId, taskId, state.plans, state.operation, resumeIdx,
+        state.completed, state.failed, state.screenshots,
+        state.startTime, state.timeoutMs, state.currentApp,
+        true, // skipConfirmationCheck — user already confirmed
+      );
+
+      this.activeOrchestrations.delete(taskId);
+      return result;
+    } else {
+      console.log(`[Orchestrator] User cancelled orchestration ${taskId} at subtask ${subtaskId}`);
+      const remainingIdx = state.plans.findIndex(p => p.subtaskId === subtaskId);
+      if (remainingIdx >= 0) {
+        state.failed.push(...state.plans.slice(remainingIdx).map(p => p.subtaskId));
+      }
+
+      this.activeOrchestrations.delete(taskId);
+      return {
+        success: false,
+        message: `Orchestration cancelled by user. Completed: ${state.completed.length}, failed: ${state.failed.length}`,
+        status: 'failed',
+        completedSubTasks: [...state.completed],
+        failedSubTasks: [...state.failed],
+        screenshots: [...state.screenshots],
+      };
+    }
+  }
+
+  /**
+   * Run a set of sub-task plans from a starting index.
+   * Handles the main execution loop, dynamic adjustment, and popup handling.
+   * Can optionally skip the confirmation check (for resume after user confirms).
+   */
+  private async runRemainingPlans(
+    deviceId: string,
+    taskId: string,
+    plans: SubTaskPlan[],
+    operation: Operation,
+    startIndex: number,
+    completed: string[],
+    failed: string[],
+    screenshots: string[],
+    startTime: number,
+    timeoutMs: number,
+    currentApp: string,
+    skipConfirmationCheck = false,
+  ): Promise<OrchestrationResult> {
     let retryCount = 0;
     const maxRetries = 1;
-    let i = 0;
+    let i = startIndex;
+    let lastCurrentState = '';
 
     while (i < plans.length) {
       if (Date.now() - startTime > timeoutMs) {
@@ -105,6 +206,41 @@ export class Orchestrator {
       }
 
       const plan = plans[i];
+
+      // Before dispatching execute phase, check if confirmation is needed
+      if (!skipConfirmationCheck && plan.phase === 'execute' && operation.requiresConfirmation) {
+        const orchState: OrchestrationState = {
+          deviceId,
+          taskId,
+          currentSubTaskIdx: i,
+          plans,
+          operation,
+          completed: [...completed],
+          failed: [...failed],
+          screenshots: [...screenshots],
+          startTime,
+          timeoutMs,
+          currentApp,
+        };
+        this.activeOrchestrations.set(taskId, orchState);
+
+        console.log(`[Orchestrator] Paused for confirmation at subtask [${plan.subtaskId}]: ${plan.goal}`);
+        return {
+          success: true,
+          message: `Fill phase complete. Confirmation needed for: ${plan.goal}`,
+          status: 'needs_confirmation',
+          completedSubTasks: [...completed],
+          failedSubTasks: [...failed],
+          screenshots: [...screenshots],
+          pendingSubTaskId: plan.subtaskId,
+          pendingContent: {
+            screenshot: screenshots.length > 0 ? screenshots[screenshots.length - 1] : '',
+            currentState: lastCurrentState,
+            executeGoal: plan.goal,
+          },
+        };
+      }
+
       console.log(`[Orchestrator] Dispatching subtask [${plan.subtaskId}]: ${plan.goal}${plan.skillHint ? ` (hint: ${plan.skillHint.targetElement})` : ''}`);
 
       const params: SubTaskExecuteParams = {
@@ -120,9 +256,11 @@ export class Orchestrator {
       try {
         const result = await this.coordinator.executeSubTask(deviceId, params);
 
-        // Handle based on status per §6.2
         if (result.screenshot) {
           screenshots.push(result.screenshot);
+        }
+        if (result.currentState) {
+          lastCurrentState = result.currentState;
         }
 
         switch (result.status) {
@@ -132,14 +270,19 @@ export class Orchestrator {
             i++;
             break;
 
+          case 'needs_confirmation':
+            // Sub-task level confirmation — treat as success for flow continuity
+            completed.push(plan.subtaskId);
+            retryCount = 0;
+            i++;
+            break;
+
           case 'failed':
             if (retryCount < maxRetries) {
               console.log(`[Orchestrator] SubTask failed, retrying (${retryCount + 1}/${maxRetries})`);
               retryCount++;
-              // Retry same sub-task
             } else {
               failed.push(plan.subtaskId);
-              // Check failure handling rules from operation
               const rule = operation.failureHandling.find(r =>
                 result.currentState.includes(r.scenario) || result.blockReason.includes(r.scenario)
               );
@@ -148,15 +291,13 @@ export class Orchestrator {
                 retryCount = 0;
                 i++;
               } else {
-                // Abort remaining
                 failed.push(...plans.slice(i + 1).map(p => p.subtaskId));
-                i = plans.length; // exit loop
+                i = plans.length;
               }
             }
             break;
 
-          case 'blocked':
-            // Try to handle popup using global handlers
+          case 'blocked': {
             const handler = this.skillManager.findGlobalHandler(currentApp, result.blockReason);
             if (handler?.strategyChain) {
               console.log(`[Orchestrator] Blocked by popup, dispatching handler: ${handler.popup}`);
@@ -175,7 +316,6 @@ export class Orchestrator {
                 });
                 if (handlerResult.status === 'success') {
                   console.log(`[Orchestrator] Popup handled, retrying subtask`);
-                  // Don't increment i, retry same sub-task
                 } else {
                   failed.push(plan.subtaskId);
                   i++;
@@ -189,25 +329,22 @@ export class Orchestrator {
               i++;
             }
             break;
+          }
 
-          case 'timeout':
-            // Split into smaller sub-tasks
+          case 'timeout': {
             console.log(`[Orchestrator] SubTask timed out, splitting goal`);
-            // Replace current plan with smaller goals
             const smaller = this.splitGoalSmaller(plan, taskId);
             if (smaller.length > 0 && smaller.length < 4) {
               plans.splice(i, 1, ...smaller);
-              // Don't increment i, try first smaller sub-task
             } else {
               failed.push(plan.subtaskId);
               i++;
             }
             break;
+          }
 
           case 'stopped':
-            // Replan from current state
             console.log(`[Orchestrator] SubTask stopped, replanning`);
-            // For now, mark as failed and continue
             failed.push(plan.subtaskId);
             retryCount = 0;
             i++;
@@ -225,12 +362,16 @@ export class Orchestrator {
       }
     }
 
+    // Clean up state on completion
+    this.activeOrchestrations.delete(taskId);
+
     const success = failed.length === 0 && completed.length > 0;
     return {
       success,
       message: success
         ? `Task completed: ${completed.length} sub-tasks`
         : `Task partially failed: ${completed.length} ok, ${failed.length} failed`,
+      status: success ? 'completed' : 'failed',
       completedSubTasks: completed,
       failedSubTasks: failed,
       screenshots,
