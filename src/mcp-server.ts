@@ -297,6 +297,7 @@ async function main() {
     executeBatch: (tasks, timeoutMs) => coordinator.executeBatch(tasks, timeoutMs).then(m => Object.fromEntries(m)),
     cancelTask: async (deviceId, taskId) => { coordinator.cancelTask(deviceId, taskId); },
     executeSubTask: (deviceId, params, timeoutMs) => coordinator.executeSubTask(deviceId, params, timeoutMs),
+    resumeOrchestration: (deviceId, params) => coordinator.resumeOrchestration(deviceId, params),
   };
 
   // Start MCP stdio protocol

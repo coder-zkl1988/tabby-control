@@ -23,6 +23,8 @@ import type {
   TaskResult,
   SubTaskResult,
   SubTaskExecuteParams,
+  OrchestrationResult,
+  ResumeParams,
 } from './protocol.js';
 import {
   TaskResultSchema,
@@ -30,6 +32,7 @@ import {
   SubTaskExecuteParamsSchema,
   SubTaskResultSchema,
   SubTaskHeartbeatSchema,
+  OrchestrationResultSchema,
 } from './protocol.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -67,6 +70,11 @@ export class TaskCoordinator {
     resolve: (value: SubTaskResult) => void;
     reject: (reason: Error) => void;
     timeout: ReturnType<typeof setTimeout>;
+    deviceId: string;
+  }>();
+  private orchestrationPending = new Map<string, {
+    resolve: (value: OrchestrationResult) => void;
+    reject: (reason: Error) => void;
     deviceId: string;
   }>();
   private progressCallbacks: ProgressCallback[] = [];
@@ -217,6 +225,25 @@ export class TaskCoordinator {
     if (!sent) throw new Error('DEVICE_OFFLINE');
 
     return this.waitForSubTaskResult(subtaskId, deviceId, timeoutMs);
+  }
+
+  /**
+   * Resume a paused orchestration (confirm/deny a needs_confirmation sub-task).
+   */
+  async resumeOrchestration(deviceId: string, params: ResumeParams): Promise<OrchestrationResult> {
+    const device = this.wsServer.getRegistry().get(deviceId);
+    if (!device) throw new Error(`DEVICE_NOT_FOUND: no device with id ${deviceId}`);
+
+    const sent = this.wsServer.sendToDevice(deviceId, {
+      channel: 'task',
+      id: `resume_${params.subtaskId}`,
+      method: 'orchestration.resume',
+      params,
+    });
+
+    if (!sent) throw new Error('DEVICE_OFFLINE');
+
+    return this.waitForOrchestrationResult(params.taskId, deviceId);
   }
 
   /**
@@ -451,6 +478,17 @@ export class TaskCoordinator {
     });
   }
 
+  private waitForOrchestrationResult(taskId: string, deviceId: string, timeoutMs = 30_000): Promise<OrchestrationResult> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.orchestrationPending.delete(taskId);
+        reject(new Error(`ORCHESTRATION_RESUME_TIMEOUT: ${taskId} after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.orchestrationPending.set(taskId, { resolve, reject, deviceId });
+    });
+  }
+
   handleSubTaskMessage(deviceId: string, message: Record<string, unknown>): void {
     const method = message.method as string;
 
@@ -471,6 +509,19 @@ export class TaskCoordinator {
     } else if (method === 'subtask.heartbeat') {
       // Forward heartbeat for monitoring/logging
       console.log(`[TaskCoordinator] SubTask heartbeat:`, JSON.stringify(message.params));
+    } else if (method === 'orchestration.result') {
+      const raw = message.params as Record<string, unknown>;
+      const taskId = raw.taskId as string;
+      const pending = this.orchestrationPending.get(taskId);
+      if (pending) {
+        this.orchestrationPending.delete(taskId);
+        try {
+          const result = OrchestrationResultSchema.parse(raw);
+          pending.resolve(result);
+        } catch (err) {
+          pending.reject(new Error(`Invalid orchestration result: ${err}`));
+        }
+      }
     }
   }
 }

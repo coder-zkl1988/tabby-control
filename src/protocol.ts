@@ -88,7 +88,7 @@ export type SkillHint = z.infer<typeof SkillHintSchema>;
 // ─── Sub-task ──────────────────────────────────────────────────────────────────
 
 export const SubTaskStatusSchema = z.enum([
-  'success', 'failed', 'blocked', 'timeout', 'stopped',
+  'success', 'failed', 'blocked', 'timeout', 'stopped', 'needs_confirmation',
 ]);
 export type SubTaskStatus = z.infer<typeof SubTaskStatusSchema>;
 
@@ -121,6 +121,28 @@ export const SubTaskHeartbeatSchema = z.object({
   elapsed: z.number().int().nonnegative(),
 });
 export type SubTaskHeartbeat = z.infer<typeof SubTaskHeartbeatSchema>;
+
+// ─── Orchestration Result ────────────────────────────────────────────────────────
+
+export const OrchestrationResultSchema = z.object({
+  success: z.boolean(),
+  message: z.string(),
+  status: z.enum(['completed', 'needs_confirmation', 'failed']).default('completed'),
+  completedSubTasks: z.array(z.string()).default([]),
+  failedSubTasks: z.array(z.string()).default([]),
+  screenshots: z.array(z.string()).default([]),
+  // Only present when status = 'needs_confirmation'
+  pendingSubTaskId: z.string().optional(),
+  pendingContent: z.record(z.unknown()).optional(),
+});
+export type OrchestrationResult = z.infer<typeof OrchestrationResultSchema>;
+
+export const ResumeParamsSchema = z.object({
+  taskId: TaskIdSchema,
+  subtaskId: z.string().min(1),
+  confirmed: z.boolean(),
+});
+export type ResumeParams = z.infer<typeof ResumeParamsSchema>;
 
 export const ExecuteBatchParamsSchema = z.object({
   devices: z.array(DeviceIdSchema).min(1),
@@ -304,6 +326,7 @@ export interface DeviceBridge {
   executeBatch(tasks: Array<{ deviceId: string; task: string }>, timeoutMs?: number): Promise<Record<string, TaskResult>>;
   cancelTask(deviceId: string, taskId: string): Promise<void>;
   executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs?: number): Promise<SubTaskResult>;
+  resumeOrchestration(deviceId: string, params: ResumeParams): Promise<OrchestrationResult>;
   getStatus(deviceId: string): Promise<DeviceInfo | null>;
 }
 

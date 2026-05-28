@@ -13,7 +13,7 @@ import { MqttPhoneProxy } from './mqtt-phone-proxy.js';
 import { BridgeClient } from './bridge.js';
 import { SkillManager } from './skill-manager.js';
 import { Orchestrator } from './orchestrator.js';
-import type { DeviceBridge, TaskResult, SubTaskResult, SubTaskExecuteParams } from './protocol.js';
+import type { DeviceBridge, TaskResult, SubTaskResult, SubTaskExecuteParams, OrchestrationResult, ResumeParams } from './protocol.js';
 import {
   createDeviceListTool,
   createExecuteTaskTool,
@@ -107,6 +107,10 @@ class InProcessBridge {
 
   async executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs?: number): Promise<SubTaskResult> {
     return this.coordinator.executeSubTask(deviceId, params, timeoutMs);
+  }
+
+  async resumeOrchestration(deviceId: string, params: ResumeParams): Promise<OrchestrationResult> {
+    return this.coordinator.resumeOrchestration(deviceId, params);
   }
 }
 
@@ -291,6 +295,9 @@ export default {
       async getStatus(deviceId: string) { return (await this._get()).getStatus(deviceId); }
       async executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs?: number) {
         return (await this._get()).executeSubTask(deviceId, params, timeoutMs);
+      }
+      async resumeOrchestration(deviceId: string, params: ResumeParams) {
+        return (await this._get()).resumeOrchestration(deviceId, params);
       }
     }
 

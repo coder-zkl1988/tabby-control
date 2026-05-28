@@ -8,7 +8,7 @@
  * the WebSocket port is already bound by the gateway worker.
  */
 
-import type { DeviceInfo, TaskResult, SubTaskExecuteParams, SubTaskResult } from './protocol.js';
+import type { DeviceInfo, TaskResult, SubTaskExecuteParams, SubTaskResult, OrchestrationResult, ResumeParams } from './protocol.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -131,5 +131,9 @@ export class BridgeClient {
       ...params,
       timeoutMs,
     });
+  }
+
+  async resumeOrchestration(deviceId: string, params: ResumeParams): Promise<OrchestrationResult> {
+    return this.call<OrchestrationResult>('device_resume_orchestration', { deviceId, ...params });
   }
 }
