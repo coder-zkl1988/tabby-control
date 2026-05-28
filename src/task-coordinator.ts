@@ -21,10 +21,15 @@ import type {
   ExecuteParams,
   ExecuteBatchParams,
   TaskResult,
+  SubTaskResult,
+  SubTaskExecuteParams,
 } from './protocol.js';
 import {
   TaskResultSchema,
   TaskIdSchema,
+  SubTaskExecuteParamsSchema,
+  SubTaskResultSchema,
+  SubTaskHeartbeatSchema,
 } from './protocol.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -58,6 +63,12 @@ export interface ProgressCallback {
 
 export class TaskCoordinator {
   private pending = new Map<TaskId, PendingRequest>();
+  private subTaskPending = new Map<string, {
+    resolve: (value: SubTaskResult) => void;
+    reject: (reason: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
+    deviceId: string;
+  }>();
   private progressCallbacks: ProgressCallback[] = [];
   private ipcNotifier: (channel: string, data: unknown) => void;
   private wsServer: WsServer;
@@ -187,6 +198,28 @@ export class TaskCoordinator {
   }
 
   /**
+   * Execute a sub-task on a device and wait for its result.
+   */
+  async executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs = 60_000): Promise<SubTaskResult> {
+    const device = this.wsServer.getRegistry().get(deviceId);
+    if (!device) throw new Error(`DEVICE_NOT_FOUND: no device with id ${deviceId}`);
+
+    const subtaskId = params.subtaskId;
+
+    // Send subtask.execute to phone
+    const sent = this.wsServer.sendToDevice(deviceId, {
+      channel: 'task',
+      id: `sub_${subtaskId}`,
+      method: 'subtask.execute',
+      params,
+    });
+
+    if (!sent) throw new Error('DEVICE_OFFLINE');
+
+    return this.waitForSubTaskResult(subtaskId, deviceId, timeoutMs);
+  }
+
+  /**
    * Cancel a running task on a device.
    */
   cancelTask(deviceId: string, taskId: string): boolean {
@@ -264,6 +297,13 @@ export class TaskCoordinator {
 
   handleTaskMessage(deviceId: string, message: Record<string, unknown>): void {
     console.log(`[tabby-control] handleTaskMessage: deviceId=${deviceId}, id=${message.id}, hasResult=${!!message.result}, method=${message.method}`);
+
+    // Route sub-task messages to their own handler
+    const method = message.method as string;
+    if (method?.startsWith('subtask.')) {
+      this.handleSubTaskMessage(deviceId, message);
+      return;
+    }
 
     // ── Result ────────────────────────────────────────────────────────────────
     if (message.result) {
@@ -398,5 +438,39 @@ export class TaskCoordinator {
         deviceId,
       });
     });
+  }
+
+  private waitForSubTaskResult(subtaskId: string, deviceId: string, timeoutMs: number): Promise<SubTaskResult> {
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.subTaskPending.delete(subtaskId);
+        reject(new Error(`SUBTASK_TIMEOUT: ${subtaskId} after ${timeoutMs}ms`));
+      }, timeoutMs);
+
+      this.subTaskPending.set(subtaskId, { resolve, reject, timeout, deviceId });
+    });
+  }
+
+  handleSubTaskMessage(deviceId: string, message: Record<string, unknown>): void {
+    const method = message.method as string;
+
+    if (method === 'subtask.result') {
+      const raw = message.params as Record<string, unknown>;
+      const subtaskId = raw.subtaskId as string;
+      const pending = this.subTaskPending.get(subtaskId);
+      if (pending) {
+        clearTimeout(pending.timeout);
+        this.subTaskPending.delete(subtaskId);
+        try {
+          const result = SubTaskResultSchema.parse(raw);
+          pending.resolve(result);
+        } catch (err) {
+          pending.reject(new Error(`Invalid subtask result: ${err}`));
+        }
+      }
+    } else if (method === 'subtask.heartbeat') {
+      // Forward heartbeat for monitoring/logging
+      console.log(`[TaskCoordinator] SubTask heartbeat:`, JSON.stringify(message.params));
+    }
   }
 }
