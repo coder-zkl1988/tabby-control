@@ -76,6 +76,52 @@ export const ExecuteParamsSchema = z.object({
 });
 export type ExecuteParams = z.infer<typeof ExecuteParamsSchema>;
 
+// ─── Skill Hint ────────────────────────────────────────────────────────────────
+
+export const SkillHintSchema = z.object({
+  targetElement: z.string(),
+  strategy: z.string(),
+  validation: z.string().optional().default(''),
+});
+export type SkillHint = z.infer<typeof SkillHintSchema>;
+
+// ─── Sub-task ──────────────────────────────────────────────────────────────────
+
+export const SubTaskStatusSchema = z.enum([
+  'success', 'failed', 'blocked', 'timeout', 'stopped',
+]);
+export type SubTaskStatus = z.infer<typeof SubTaskStatusSchema>;
+
+export const SubTaskExecuteParamsSchema = z.object({
+  taskId: TaskIdSchema,
+  subtaskId: z.string().min(1),
+  goal: z.string().min(1),
+  context: z.string().default(''),
+  maxSteps: z.number().int().min(1).max(3).default(3),
+  timeoutMs: z.number().int().positive().default(15_000),
+  skillHint: SkillHintSchema.optional(),
+});
+export type SubTaskExecuteParams = z.infer<typeof SubTaskExecuteParamsSchema>;
+
+export const SubTaskResultSchema = z.object({
+  taskId: TaskIdSchema,
+  subtaskId: z.string().min(1),
+  status: SubTaskStatusSchema,
+  actions: z.array(z.string()).default([]),
+  screenshot: z.string().optional(), // base64
+  currentState: z.string().default(''),
+  blockReason: z.string().default(''),
+});
+export type SubTaskResult = z.infer<typeof SubTaskResultSchema>;
+
+export const SubTaskHeartbeatSchema = z.object({
+  taskId: TaskIdSchema,
+  subtaskId: z.string().min(1),
+  step: z.number().int().min(0),
+  elapsed: z.number().int().nonnegative(),
+});
+export type SubTaskHeartbeat = z.infer<typeof SubTaskHeartbeatSchema>;
+
 export const ExecuteBatchParamsSchema = z.object({
   devices: z.array(DeviceIdSchema).min(1),
   tasks: z.array(z.object({
@@ -257,6 +303,7 @@ export interface DeviceBridge {
   executeTaskAll(task: string, timeoutMs?: number): Promise<Record<string, TaskResult>>;
   executeBatch(tasks: Array<{ deviceId: string; task: string }>, timeoutMs?: number): Promise<Record<string, TaskResult>>;
   cancelTask(deviceId: string, taskId: string): Promise<void>;
+  executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs?: number): Promise<SubTaskResult>;
   getStatus(deviceId: string): Promise<DeviceInfo | null>;
 }
 
