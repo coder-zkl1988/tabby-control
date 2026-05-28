@@ -13,6 +13,16 @@
 
 import WebSocket, { WebSocketServer as WSServer } from 'ws';
 import { type Server as HTTPServer } from 'http';
+import { appendFileSync } from 'fs';
+import { join } from 'path';
+
+// File-based debug logging to bypass OpenClaw's console.log filtering
+const DEBUG_LOG = join(process.env.HOME ?? '/tmp', 'tabby-control-debug.log');
+function flog(msg: string): void {
+  const ts = new Date().toISOString();
+  const line = `[${ts}] ${msg}\n`;
+  try { appendFileSync(DEBUG_LOG, line); } catch { /* ignore */ }
+}
 import type {
   DeviceInfo,
   DeviceCapabilities,
@@ -35,10 +45,6 @@ export interface DeviceSession {
   lastSnapshot?: MirrorSnapshot;
   /** Raw binary frame buffer (MQTT path) — avoids base64 re-encoding for native consumers */
   lastFrameBuffer?: Buffer;
-  /** Timestamp when the device was marked as reconnecting (WS closed but within grace period). */
-  reconnectingAt?: number;
-  /** Timer for the reconnect grace period — fires after RECONNECT_GRACE_MS. */
-  graceTimer?: ReturnType<typeof setTimeout>;
   /** Tracks the last time we received any message or pong from this device. */
   lastActivityAt: number;
 }
@@ -53,8 +59,6 @@ type DeviceChangeCallback = (devices: DeviceInfo[]) => void;
 const HEARTBEAT_INTERVAL_MS = 15_000;
 /** If no pong (or any message) received within this window, mark device as reconnecting. */
 const HEARTBEAT_TIMEOUT_MS = 30_000;
-/** After a WS close, keep the device in the registry for this long to allow reconnection. */
-const RECONNECT_GRACE_MS = 30_000;
 
 // ── Human-readable unit conversion helpers ─────────────────────────────────────
 
@@ -88,21 +92,15 @@ export class DeviceRegistry {
   register(deviceId: string, ws: WebSocket, capabilities?: DeviceCapabilities): DeviceSession {
     const now = Date.now();
 
-    // If a grace-period entry exists for this deviceId, restore it instead of creating fresh.
+    // If an entry exists for this deviceId, reassign the ws.
     const existing = this.devices.get(deviceId);
     if (existing) {
-      // Clear the grace timer — the device reconnected in time.
-      if (existing.graceTimer) {
-        clearTimeout(existing.graceTimer);
-      }
       existing.ws = ws;
       existing.info = {
         ...existing.info,
         status: 'idle',
         lastSeen: now,
       };
-      existing.reconnectingAt = undefined;
-      existing.graceTimer = undefined;
       existing.lastActivityAt = now;
       this.notifyChange();
       return existing;
@@ -204,32 +202,14 @@ export class DeviceRegistry {
   }
 
   /**
-   * Instead of immediately removing a device on WS close, start a grace period.
-   * If the device reconnects within RECONNECT_GRACE_MS, the session is restored.
-   * Otherwise the device is removed for real.
+   * Remove a device immediately on WS close.
+   * The phone app handles reconnection itself — no grace period needed.
    */
-  scheduleGraceRemoval(deviceId: string): void {
+  removeImmediately(deviceId: string): void {
     const s = this.devices.get(deviceId);
     if (!s) return;
-
-    // Mark as reconnecting so the UI can show a "reconnecting" state
-    s.reconnectingAt = Date.now();
-    s.info.status = 'idle'; // keep idle so UI still shows the card
+    this.devices.delete(deviceId);
     this.notifyChange();
-
-    // Clear any existing grace timer
-    if (s.graceTimer) {
-      clearTimeout(s.graceTimer);
-    }
-
-    s.graceTimer = setTimeout(() => {
-      const current = this.devices.get(deviceId);
-      // Only remove if still in grace period (not reconnected)
-      if (current && current.reconnectingAt) {
-        this.devices.delete(deviceId);
-        this.notifyChange();
-      }
-    }, RECONNECT_GRACE_MS);
   }
 
   onDeviceChange(callback: DeviceChangeCallback): () => void {
@@ -313,6 +293,28 @@ export class WsServer {
     this.taskMessageHandler = handler;
   }
 
+  /**
+   * Notify the Nexu controller about a device connect/disconnect event
+   * via its internal webhook endpoint. This triggers SSE updates for
+   * browser clients without polling.
+   */
+  private async notifyController(event: { type: string; deviceId: string }): Promise<void> {
+    try {
+      const controllerPort =
+        process.env.NEXU_CONTROLLER_PORT ??
+        process.env.CONTROLLER_PORT ??
+        "50800";
+      await fetch(`http://127.0.0.1:${controllerPort}/api/v1/devices/_internal/webhook`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(event),
+        signal: AbortSignal.timeout(2000),
+      });
+    } catch {
+      // Controller may not be running yet — that's fine
+    }
+  }
+
   getRegistry(): DeviceRegistry {
     return this.registry;
   }
@@ -332,6 +334,7 @@ export class WsServer {
     }
     const json = JSON.stringify(message);
     session.ws.send(json);
+    flog(`SEND TO DEVICE: device=${deviceId}, msgLen=${json.length}, msg=${json.slice(0, 200)}`);
     return true;
   }
 
@@ -401,6 +404,7 @@ export class WsServer {
   private handleConnection(ws: WebSocket, _req: unknown): void {
     let deviceId: string | null = null;
     let authed = false;
+    flog(`PHONE CONNECT: new connection`);
 
     // Auth must complete within 15s
     const authTimeout = setTimeout(() => {
@@ -434,8 +438,30 @@ export class WsServer {
       }
     });
 
-    ws.on('message', (data) => {
+    ws.on('message', (data, isBinary) => {
       lastActivity = Date.now();
+
+      // Debug: log every message type for diagnosis
+      const msgPreview = isBinary
+        ? `binary(${(data as Buffer).length}b)`
+        : `text(${(data as Buffer).length}b):${(data as Buffer).toString().substring(0, 80)}`;
+      console.log(`[tabby-control] phone msg: device=${deviceId}, ${msgPreview}`);
+      flog(`PHONE MSG: device=${deviceId}, ${msgPreview}`);
+
+      if (isBinary) {
+        // H.264 video frame forwarding
+        if (!deviceId) {
+          flog(`PHONE BINARY DROPPED: no deviceId, size=${(data as Buffer).length}`);
+          return; // not authed yet
+        }
+        // Dump first 12 bytes of binary frame for header format verification
+        const buf = data as Buffer;
+        const hexDump = Array.from(buf.slice(0, 12)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ');
+        flog(`PHONE BINARY HEADER: size=${buf.length}, header=${hexDump}`);
+        this.forwardBinaryFrame(deviceId, data as Buffer);
+        return;
+      }
+
       try {
         const raw = data.toString();
         const msg = JSON.parse(raw) as Record<string, unknown>;
@@ -460,6 +486,7 @@ export class WsServer {
           const session = this.registry.register(deviceId, ws, capabilities);
           ws.send(JSON.stringify({ type: 'connected', serverSessionId: deviceId }));
           this.ipcNotifier('device:connected', session.info);
+          void this.notifyController({ type: 'device_connected', deviceId });
           console.log(`[tabby-control] device connected: ${deviceId}`);
           return;
         }
@@ -489,10 +516,23 @@ export class WsServer {
       clearTimeout(authTimeout);
       clearInterval(heartbeatInterval);
       if (deviceId) {
-        // Start grace period instead of immediate removal
-        this.registry.scheduleGraceRemoval(deviceId);
+        // Remove immediately — phone app handles reconnection itself
+        this.registry.removeImmediately(deviceId);
         this.ipcNotifier('device:disconnected', { deviceId });
-        console.log(`[tabby-control] device disconnected (grace period started): ${deviceId}`);
+        void this.notifyController({ type: 'device_disconnected', deviceId });
+        console.log(`[tabby-control] device disconnected: ${deviceId}`);
+
+        // Notify all mirror subscribers that the phone has disconnected
+        const forwarders = this.registry.getMirrorForwarders(deviceId);
+        if (forwarders.size > 0) {
+          const disconnectMsg = JSON.stringify({ channel: 'mirror', type: 'device_disconnected', deviceId });
+          for (const sub of forwarders) {
+            if (sub.readyState === 1) { // WebSocket.OPEN
+              sub.send(disconnectMsg);
+            }
+          }
+          console.log(`[tabby-control] notified ${forwarders.size} mirror subscriber(s) of disconnect: ${deviceId}`);
+        }
       }
     });
 
@@ -507,6 +547,17 @@ export class WsServer {
       if (parsed.success) {
         this.registry.updateSnapshot(deviceId, parsed.data);
         this.ipcNotifier('device:snapshot', { deviceId, snapshot: parsed.data });
+
+        // Forward the frame to all mirror subscribers (browser clients)
+        const forwarders = this.registry.getMirrorForwarders(deviceId);
+        const raw = JSON.stringify(msg);
+        for (const ws of forwarders) {
+          if (ws.readyState === WebSocket.OPEN) {
+            // Skip if the client has a backlog (keep mirror real-time)
+            if (ws.bufferedAmount > 0) continue;
+            ws.send(raw);
+          }
+        }
       }
       return;
     }
@@ -530,10 +581,83 @@ export class WsServer {
     }
   }
 
+  /**
+   * Forward a binary H.264 frame from a phone to all mirror subscribers.
+   * The frame is forwarded as-is (binary WebSocket message) to avoid
+   * base64 encoding overhead.
+   *
+   * Binary frame header layout:
+   *   [0]     frameType (0x01 = H.264)
+   *   [1]     keyframe flag (0x01 = key, 0x00 = delta)
+   *   [2-3]   width  (uint16 LE)
+   *   [4-5]   height (uint16 LE)
+   *   [6-9]   timestamp ms (uint32 LE)
+   *   [10+]   NAL unit data (Annex B)
+   */
+  private frameCount = 0;
+  private lastFrameLogTime = 0;
+
+  private forwardBinaryFrame(deviceId: string, data: Buffer): void {
+    const isKeyframe = data.length > 1 && data[1] === 0x01;
+
+    // For keyframes, dump the first 40 bytes of NAL data (after 10-byte header) for format diagnosis
+    if (isKeyframe) {
+      const nalStart = Math.min(10, data.length);
+      const nalEnd = Math.min(50, data.length);
+      const nalHex = Array.from(data.slice(nalStart, nalEnd)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ');
+      flog(`KEYFRAME NAL DATA (bytes 10-49): ${nalHex}`);
+    }
+
+    // Only store keyframes as lastFrameBuffer so new subscribers
+    // always get a valid starting point for H.264 decoding.
+    // Delta frames are useless without a preceding keyframe.
+    if (isKeyframe) {
+      const session = this.registry.get(deviceId);
+      if (session) {
+        session.lastFrameBuffer = data;
+      }
+    }
+
+    const forwarders = this.registry.getMirrorForwarders(deviceId);
+    const now = Date.now();
+    this.frameCount++;
+    flog(`FORWARD: device=${deviceId}, size=${data.length}, keyframe=${isKeyframe}, forwarders=${forwarders.size}, totalFrames=${this.frameCount}`);
+    if (now - this.lastFrameLogTime > 5000) {
+      console.log(`[tabby-control] forwardBinaryFrame: device=${deviceId}, size=${data.length}, keyframe=${isKeyframe}, forwarders=${forwarders.size}, totalFrames=${this.frameCount}`);
+      this.lastFrameLogTime = now;
+    }
+
+    for (const ws of forwarders) {
+      if (ws.readyState === WebSocket.OPEN) {
+        // Always send keyframes — the H.264 decoder needs them to initialize.
+        // Only skip delta frames when the client has a backlog (keep mirror real-time).
+        if (!isKeyframe && ws.bufferedAmount > 0) {
+          if (this.frameCount % 30 === 0) {
+            flog(`FORWARD SKIP: delta backlog, bufferedAmount=${ws.bufferedAmount}, totalFrames=${this.frameCount}`);
+          }
+          continue;
+        }
+        ws.send(data);
+        // Log every 50th frame or every keyframe sent to mirror subscriber
+        if (isKeyframe || this.frameCount % 50 === 0) {
+          flog(`FORWARD SENT: device=${deviceId}, size=${data.length}, keyframe=${isKeyframe}, totalFrames=${this.frameCount}, readyState=${ws.readyState}`);
+        }
+      } else {
+        flog(`FORWARD SKIP: forwarder not open, readyState=${ws.readyState}`);
+      }
+    }
+  }
+
   private handleMirrorConnection(ws: WebSocket, _req: unknown): void {
     let subscribedDeviceId: string | null = null;
 
-    ws.on('message', (data) => {
+    ws.on('message', (data, isBinary) => {
+      if (isBinary) {
+        // Binary messages from mirror client are control commands sent as binary
+        // Currently we don't expect binary from mirror clients, so ignore
+        return;
+      }
+
       try {
         const msg = JSON.parse(data.toString()) as Record<string, unknown>;
 
@@ -547,6 +671,7 @@ export class WsServer {
           subscribedDeviceId = targetDeviceId;
           this.registry.addMirrorForwarder(targetDeviceId, ws);
           console.log(`[tabby-control] mirror subscriber connected for device: ${targetDeviceId}`);
+          flog(`MIRROR SUB: device=${targetDeviceId}, forwarders=${this.registry.getMirrorForwarders(targetDeviceId).size}`);
 
           const fps = typeof (msg as Record<string, unknown>).fps === 'number' ? (msg as Record<string, unknown>).fps as number : 5;
           this.sendToDevice(targetDeviceId, { channel: 'mirror', type: 'start', deviceId: targetDeviceId, fps });
@@ -556,6 +681,16 @@ export class WsServer {
           if (lastSnapshot && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ channel: 'mirror', ...lastSnapshot }));
           }
+
+          // Send the latest binary keyframe if available (for H.264 streams)
+          const session = this.registry.get(targetDeviceId);
+          const lastBuffer = session?.lastFrameBuffer;
+          flog(`MIRROR SUB LASTFRAME: device=${targetDeviceId}, hasBuffer=${!!lastBuffer}, bufferSize=${lastBuffer?.length ?? 0}, readyState=${ws.readyState}`);
+          if (lastBuffer && ws.readyState === WebSocket.OPEN) {
+            const isKey = lastBuffer.length > 1 && lastBuffer[1] === 0x01;
+            flog(`MIRROR SUB SEND LASTFRAME: size=${lastBuffer.length}, isKeyframe=${isKey}, firstBytes=${Array.from(lastBuffer.slice(0, 12)).map(b => '0x' + b.toString(16).padStart(2, '0')).join(' ')}`);
+            ws.send(lastBuffer);
+          }
         }
 
         if (subscribedDeviceId) {
@@ -563,6 +698,7 @@ export class WsServer {
           if (channel === 'mirror') {
             const type = msg.type as string;
             if (type === 'click' || type === 'swipe' || type === 'input_text' || type === 'press_key') {
+              flog(`MIRROR ACTION: device=${subscribedDeviceId}, type=${type}, msg=${JSON.stringify(msg)}`);
               this.sendToDevice(subscribedDeviceId, msg);
             }
           }

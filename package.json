@@ -68,7 +68,9 @@
     "typescript": "^5.7.0"
   },
   "dependencies": {
-    "aedes": "^1.0.2",
+    "aedes": "^0.51.3",
+    "fastparallel": "^2.4.1",
+    "fastseries": "^2.0.0",
     "ws": "^8.18.0",
     "zod": "^3.23.8"
   }

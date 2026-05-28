@@ -38,6 +38,11 @@
         "type": "number",
         "description": "最大同时连接设备数。",
         "default": 10
+      },
+      "mqttPort": {
+        "type": "number",
+        "description": "MQTT broker port for device push notifications.",
+        "default": 18883
       }
     }
   }

@@ -3,7 +3,8 @@
  * DeviceRegistry / TaskCoordinator handlers.
  */
 
-import type { Aedes, PublishPacket } from 'aedes';
+import type Aedes from 'aedes';
+import type { PublishPacket } from 'aedes';
 import type { DeviceRegistry } from './ws-server.js';
 import { MQTT_SUFFIXES, FRAME_HEADER_SEPARATOR, FrameHeaderSchema } from './protocol.js';
 import type { ExecuteParams, AgentProgressParams } from './protocol.js';

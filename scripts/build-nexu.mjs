@@ -32,10 +32,13 @@ for (const entry of ["dist", "openclaw.plugin.json", "package.json", "pnpm-lock.
   );
 }
 
-// Install production-only dependencies in the output directory
-// (avoids shipping devDependencies like eslint/typescript into the Nexu distributable)
-console.log("[nexu-build] Installing production dependencies...");
-execSync("pnpm install --prod --frozen-lockfile", {
+// Install production-only dependencies in the output directory.
+// Use npm instead of pnpm because pnpm's hoisted linker still does not
+// install transitive deps that packages require() internally (e.g. aedes
+// requires fastparallel which require()s reusify). npm creates a true
+// flat node_modules where all transitive deps are reachable by Node.js.
+console.log("[nexu-build] Installing production dependencies (npm)...");
+execSync("npm install --omit=dev --no-package-lock", {
   cwd: OUTPUT_DIR,
   stdio: "inherit",
 });
