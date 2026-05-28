@@ -128,6 +128,7 @@ export const OrchestrationResultSchema = z.object({
   success: z.boolean(),
   message: z.string(),
   status: z.enum(['completed', 'needs_confirmation', 'failed']).default('completed'),
+  taskId: z.string().optional(),
   completedSubTasks: z.array(z.string()).default([]),
   failedSubTasks: z.array(z.string()).default([]),
   screenshots: z.array(z.string()).default([]),

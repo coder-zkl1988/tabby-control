@@ -396,7 +396,7 @@ export function createExecuteSkillTool(orchestrator: Orchestrator, registry: Dev
         },
         task: {
           type: 'string',
-          description: 'Natural language task description (Chinese or English)',
+          description: 'Natural language task description (Chinese or English). Not needed for action="resume".',
         },
         currentApp: {
           type: 'string',
@@ -407,14 +407,90 @@ export function createExecuteSkillTool(orchestrator: Orchestrator, registry: Dev
           description: 'Overall orchestration timeout in milliseconds (default: 600000)',
           default: 600000,
         },
+        action: {
+          type: 'string',
+          description: 'Action to perform. "start" (default) begins a new skill orchestration. "resume" resumes a paused orchestration after user confirmation.',
+          enum: ['start', 'resume'],
+          default: 'start',
+        },
+        confirmed: {
+          type: 'boolean',
+          description: 'Only for action="resume". true = user confirmed, proceed with execute phase. false = user cancelled, abort remaining.',
+        },
+        subtaskId: {
+          type: 'string',
+          description: 'Only for action="resume". The pendingSubTaskId from the needs_confirmation result.',
+        },
+        taskId: {
+          type: 'string',
+          description: 'Only for action="resume". The original orchestration taskId.',
+        },
       },
       required: ['deviceId', 'task'],
     },
     async execute(
       _id: string,
-      params: { deviceId?: string; task?: string; currentApp?: string; timeout?: number },
+      params: { deviceId?: string; task?: string; currentApp?: string; timeout?: number; action?: string; confirmed?: boolean; subtaskId?: string; taskId?: string },
     ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-      if (!params.deviceId || !params.task) {
+      if (!params.deviceId) {
+        return { content: [{ type: 'text', text: 'deviceId is required.' }], isError: true };
+      }
+
+      // ── Resume flow ──
+      if (params.action === 'resume') {
+        if (!params.taskId || !params.subtaskId || params.confirmed === undefined) {
+          return { content: [{ type: 'text', text: 'For action="resume": taskId, subtaskId, and confirmed are required.' }], isError: true };
+        }
+        try {
+          const result = await orchestrator.resumeOrchestration(
+            params.deviceId, params.taskId, params.subtaskId, params.confirmed,
+          );
+          const sections: string[] = [];
+          if (result.status === 'needs_confirmation') {
+            const pendingContent = result.pendingContent as Record<string, unknown> | undefined;
+            const pendingSubTaskId = result.pendingSubTaskId ?? '';
+            const currentState = (pendingContent?.currentState as string) ?? '';
+            const executeGoal = (pendingContent?.executeGoal as string) ?? '';
+            const screenshot = (pendingContent?.screenshot as string) ?? '';
+
+            sections.push(`⚠️ Confirmation required`);
+            sections.push(``);
+            sections.push(`Sub-task paused: ${pendingSubTaskId}`);
+            if (executeGoal) sections.push(`Goal: ${executeGoal}`);
+            if (currentState) sections.push(`Preview: ${currentState}`);
+            if (screenshot) sections.push(`📸 Screenshot captured`);
+            sections.push(``);
+            sections.push(`To confirm: call device_execute_skill with action="resume", taskId="${params.taskId}", subtaskId="${pendingSubTaskId}", confirmed=true`);
+            sections.push(`To cancel: call device_execute_skill with action="resume", taskId="${params.taskId}", subtaskId="${pendingSubTaskId}", confirmed=false`);
+
+            return { content: [{ type: 'text', text: sections.join('\n') }], isError: false };
+          }
+          if (result.success) {
+            sections.push(`✅ Skill task completed`);
+          } else {
+            sections.push(`❌ Skill task failed: ${result.message}`);
+          }
+          sections.push(`Sub-tasks completed: ${result.completedSubTasks.length}`);
+          sections.push(`Sub-tasks failed: ${result.failedSubTasks.length}`);
+          if (result.completedSubTasks.length > 0) {
+            sections.push(`Completed: ${result.completedSubTasks.join(', ')}`);
+          }
+          if (result.failedSubTasks.length > 0) {
+            sections.push(`Failed: ${result.failedSubTasks.join(', ')}`);
+          }
+          if (result.screenshots.length > 0) {
+            sections.push(`\n📸 ${result.screenshots.length} screenshot(s) captured`);
+          }
+
+          return { content: [{ type: 'text', text: sections.join('\n') }], isError: !result.success };
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          return { content: [{ type: 'text', text: `device_execute_skill resume failed: ${msg}` }], isError: true };
+        }
+      }
+
+      // ── Start flow (default) ──
+      if (!params.task) {
         return { content: [{ type: 'text', text: 'deviceId and task are required.' }], isError: true };
       }
       try {
@@ -433,6 +509,25 @@ export function createExecuteSkillTool(orchestrator: Orchestrator, registry: Dev
         );
 
         const sections: string[] = [];
+        if (result.status === 'needs_confirmation') {
+          const pendingContent = result.pendingContent as Record<string, unknown> | undefined;
+          const pendingSubTaskId = result.pendingSubTaskId ?? '';
+          const currentState = (pendingContent?.currentState as string) ?? '';
+          const executeGoal = (pendingContent?.executeGoal as string) ?? '';
+          const screenshot = (pendingContent?.screenshot as string) ?? '';
+
+          sections.push(`⚠️ Confirmation required`);
+          sections.push(``);
+          sections.push(`Sub-task paused: ${pendingSubTaskId}`);
+          if (executeGoal) sections.push(`Goal: ${executeGoal}`);
+          if (currentState) sections.push(`Preview: ${currentState}`);
+          if (screenshot) sections.push(`📸 Screenshot captured`);
+          sections.push(``);
+          sections.push(`To confirm: call device_execute_skill with action="resume", taskId="${result.taskId}", subtaskId="${pendingSubTaskId}", confirmed=true`);
+          sections.push(`To cancel: call device_execute_skill with action="resume", taskId="${result.taskId}", subtaskId="${pendingSubTaskId}", confirmed=false`);
+
+          return { content: [{ type: 'text', text: sections.join('\n') }], isError: false };
+        }
         if (result.success) {
           sections.push(`✅ Skill task completed`);
         } else {

@@ -151,6 +151,18 @@ async function main() {
               );
               break;
             }
+            case 'device_resume_orchestration': {
+              const { deviceId, taskId, subtaskId, confirmed } = params ?? {};
+              if (!deviceId || !taskId || !subtaskId || confirmed === undefined) {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: { code: 'INVALID_PARAMS', message: 'deviceId, taskId, subtaskId, and confirmed are required' } }));
+                return;
+              }
+              result = await orchestrator.resumeOrchestration(
+                deviceId as string, taskId as string, subtaskId as string, confirmed as boolean,
+              );
+              break;
+            }
             default:
               res.writeHead(400, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: { code: 'UNKNOWN_METHOD', message: `Unknown method: ${method}` } }));

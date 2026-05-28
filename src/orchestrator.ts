@@ -229,6 +229,7 @@ export class Orchestrator {
           success: true,
           message: `Fill phase complete. Confirmation needed for: ${plan.goal}`,
           status: 'needs_confirmation',
+          taskId,
           completedSubTasks: [...completed],
           failedSubTasks: [...failed],
           screenshots: [...screenshots],

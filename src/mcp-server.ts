@@ -165,7 +165,7 @@ class McpServer {
               },
               {
                 name: "device_execute_skill",
-                description: "Execute a task using skill-based sub-task orchestration. Decomposes complex tasks into ≤3-step sub-tasks with skill hints. Falls back to device_execute_task if no skill is available.",
+                description: "Execute a task using skill-based sub-task orchestration. Decomposes complex tasks into ≤3-step sub-tasks with skill hints. Falls back to device_execute_task if no skill is available. Supports resume flow (action='resume') for operations requiring user confirmation.",
                 inputSchema: {
                   type: "object",
                   properties: {
@@ -173,6 +173,10 @@ class McpServer {
                     task: { type: "string", description: "Natural language task description" },
                     currentApp: { type: "string", description: "Current app package name (optional, uses device's current app if omitted)" },
                     timeout: { type: "number", description: "Timeout in milliseconds", default: 600000 },
+                    action: { type: "string", description: "Action to perform. 'start' (default) begins a new orchestration. 'resume' resumes a paused orchestration after confirmation.", enum: ["start", "resume"] },
+                    confirmed: { type: "boolean", description: "Only for action='resume'. true = proceed, false = cancel." },
+                    subtaskId: { type: "string", description: "Only for action='resume'. The pendingSubTaskId from the needs_confirmation result." },
+                    taskId: { type: "string", description: "Only for action='resume'. The original orchestration taskId." },
                   },
                   required: ["deviceId", "task"],
                 },
@@ -230,16 +234,49 @@ class McpServer {
                 break;
               }
               const deviceId = args.deviceId as string;
-              const task = args.task as string;
-              const currentApp = (args.currentApp as string) ?? '';
-              const timeout = Math.min((args.timeout as number) ?? 600_000, 600_000);
-              const result = await this.orchestrator.executeSkillTask(deviceId, task, currentApp, timeout);
-              const text = result.success
-                ? `✅ Skill task completed\nSub-tasks: ${result.completedSubTasks.length} ok, ${result.failedSubTasks.length} failed`
-                : `❌ Skill task failed: ${result.message}`;
+              const action = (args.action as string) ?? 'start';
+
+              let result;
+              if (action === 'resume') {
+                const taskId = args.taskId as string;
+                const subtaskId = args.subtaskId as string;
+                const confirmed = args.confirmed as boolean | undefined;
+                if (!taskId || !subtaskId || confirmed === undefined) {
+                  this.sendError(id, -32602, 'For action="resume": taskId, subtaskId, and confirmed are required.');
+                  break;
+                }
+                result = await this.orchestrator.resumeOrchestration(deviceId, taskId, subtaskId, confirmed);
+              } else {
+                const task = args.task as string;
+                const currentApp = (args.currentApp as string) ?? '';
+                const timeout = Math.min((args.timeout as number) ?? 600_000, 600_000);
+                result = await this.orchestrator.executeSkillTask(deviceId, task, currentApp, timeout);
+              }
+
+              let text: string;
+              if (result.status === 'needs_confirmation') {
+                text = [
+                  `⚠️ Confirmation required`,
+                  `Sub-task paused: ${result.pendingSubTaskId}`,
+                  `Goal: ${(result.pendingContent as Record<string, unknown> | undefined)?.executeGoal as string ?? ''}`,
+                  (result.pendingContent as Record<string, unknown> | undefined)?.currentState
+                    ? `Preview: ${(result.pendingContent as Record<string, unknown>).currentState as string}`
+                    : '',
+                  (result.pendingContent as Record<string, unknown> | undefined)?.screenshot
+                    ? `📸 Screenshot captured`
+                    : '',
+                  ``,
+                  `To confirm: call device_execute_skill with action="resume", taskId="${result.taskId ?? ''}", subtaskId="${result.pendingSubTaskId ?? ''}", confirmed=true`,
+                  `To cancel: call device_execute_skill with action="resume", taskId="${result.taskId ?? ''}", subtaskId="${result.pendingSubTaskId ?? ''}", confirmed=false`,
+                ].filter(Boolean).join('\n');
+              } else {
+                text = result.success
+                  ? `✅ Skill task completed\nSub-tasks: ${result.completedSubTasks.length} ok, ${result.failedSubTasks.length} failed`
+                  : `❌ Skill task failed: ${result.message}`;
+              }
               this.send(id, {
                 content: [{ type: "text", text }],
-                isError: !result.success,
+                isError: result.status === 'needs_confirmation' ? false : !result.success,
               });
               break;
             }
