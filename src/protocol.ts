@@ -122,6 +122,29 @@ export const SubTaskHeartbeatSchema = z.object({
 });
 export type SubTaskHeartbeat = z.infer<typeof SubTaskHeartbeatSchema>;
 
+// ─── Handler schema ───────────────────────────────────────────────────────────────
+
+// Handler schema for interrupt handling rules
+export const HandlerSchema = z.object({
+  name: z.string(),
+  trigger: z.string(),
+  strategy: z.enum(['dismiss', 'ignore', 'report']),
+  action: z.string().optional(),
+});
+export type Handler = z.infer<typeof HandlerSchema>;
+
+// Task lifecycle messages
+export const TaskStartParamsSchema = z.object({
+  taskId: z.string(),
+  handlers: z.array(HandlerSchema).default([]),
+});
+export type TaskStartParams = z.infer<typeof TaskStartParamsSchema>;
+
+export const TaskEndParamsSchema = z.object({
+  taskId: z.string(),
+});
+export type TaskEndParams = z.infer<typeof TaskEndParamsSchema>;
+
 // ─── Orchestration Result ────────────────────────────────────────────────────────
 
 export const OrchestrationResultSchema = z.object({
@@ -329,6 +352,8 @@ export interface DeviceBridge {
   executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs?: number): Promise<SubTaskResult>;
   resumeOrchestration(deviceId: string, params: ResumeParams): Promise<OrchestrationResult>;
   getStatus(deviceId: string): Promise<DeviceInfo | null>;
+  sendTaskStart(deviceId: string, params: TaskStartParams): Promise<void>;
+  sendTaskEnd(deviceId: string, params: TaskEndParams): Promise<void>;
 }
 
 // ─── MQTT Topics ──────────────────────────────────────────────────────────────

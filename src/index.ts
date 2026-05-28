@@ -11,9 +11,8 @@ import { TaskCoordinator } from './task-coordinator.js';
 import { MqttBroker } from './mqtt-broker.js';
 import { MqttPhoneProxy } from './mqtt-phone-proxy.js';
 import { BridgeClient } from './bridge.js';
-import { SkillManager } from './skill-manager.js';
 import { Orchestrator } from './orchestrator.js';
-import type { DeviceBridge, TaskResult, SubTaskResult, SubTaskExecuteParams, OrchestrationResult, ResumeParams } from './protocol.js';
+import type { DeviceBridge, TaskResult, SubTaskResult, SubTaskExecuteParams, OrchestrationResult, ResumeParams, TaskStartParams, TaskEndParams } from './protocol.js';
 import {
   createDeviceListTool,
   createExecuteTaskTool,
@@ -111,6 +110,14 @@ class InProcessBridge {
 
   async resumeOrchestration(deviceId: string, params: ResumeParams): Promise<OrchestrationResult> {
     return this.coordinator.resumeOrchestration(deviceId, params);
+  }
+
+  async sendTaskStart(deviceId: string, params: TaskStartParams): Promise<void> {
+    return this.coordinator.sendTaskStart(deviceId, params);
+  }
+
+  async sendTaskEnd(deviceId: string, params: TaskEndParams): Promise<void> {
+    return this.coordinator.sendTaskEnd(deviceId, params);
   }
 }
 
@@ -299,6 +306,12 @@ export default {
       async resumeOrchestration(deviceId: string, params: ResumeParams) {
         return (await this._get()).resumeOrchestration(deviceId, params);
       }
+      async sendTaskStart(deviceId: string, params: TaskStartParams) {
+        return (await this._get()).sendTaskStart(deviceId, params);
+      }
+      async sendTaskEnd(deviceId: string, params: TaskEndParams) {
+        return (await this._get()).sendTaskEnd(deviceId, params);
+      }
     }
 
     let _orchestrator: Orchestrator | null = null;
@@ -308,8 +321,7 @@ export default {
         // Gateway worker: port available → full setup
         const coordinator = new TaskCoordinator(wsServer, ipcNotifier);
         wsServer.setTaskMessageHandler(coordinator.handleTaskMessage.bind(coordinator));
-        const skillManager = new SkillManager();
-        _orchestrator = new Orchestrator(coordinator, skillManager);
+        _orchestrator = new Orchestrator(coordinator);
         wsServer.setMirrorHandler({
           onClick: (deviceId: string, params: Record<string, unknown>) => {
             logger.debug(`[tabby-control] mirror click ${deviceId}: ${JSON.stringify(params)}`);

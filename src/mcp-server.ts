@@ -17,7 +17,6 @@
 import { createServer } from 'http';
 import { WsServer } from './ws-server.js';
 import { TaskCoordinator } from './task-coordinator.js';
-import { SkillManager } from './skill-manager.js';
 import { Orchestrator } from './orchestrator.js';
 import type { DeviceBridge } from './protocol.js';
 
@@ -248,9 +247,26 @@ class McpServer {
                 result = await this.orchestrator.resumeOrchestration(deviceId, taskId, subtaskId, confirmed);
               } else {
                 const task = args.task as string;
-                const currentApp = (args.currentApp as string) ?? '';
+                const rawSteps = args.steps as Array<{ name: string; type: string; action?: string; prompt?: string; maxSteps?: number; validation?: string }> | undefined;
+                const rawHandlers = args.handlers as Array<{ name: string; trigger: string; strategy: string; action?: string }> | undefined;
                 const timeout = Math.min((args.timeout as number) ?? 600_000, 600_000);
-                result = await this.orchestrator.executeSkillTask(deviceId, task, currentApp, timeout);
+
+                const steps = (rawSteps ?? []).map(s => ({
+                  name: s.name,
+                  type: s.type as 'deterministic' | 'flexible',
+                  action: s.action,
+                  prompt: s.prompt,
+                  maxSteps: s.maxSteps,
+                  validation: s.validation,
+                }));
+                const handlers = (rawHandlers ?? []).map(h => ({
+                  name: h.name,
+                  trigger: h.trigger,
+                  strategy: h.strategy as 'dismiss' | 'ignore' | 'report',
+                  action: h.action,
+                }));
+
+                result = await this.orchestrator.executeSkillTask(deviceId, task, steps, handlers, timeout);
               }
 
               let text: string;
@@ -312,8 +328,7 @@ async function main() {
   const coordinator = new TaskCoordinator(wsServer, ipcNotifier);
   wsServer.setTaskMessageHandler(coordinator.handleTaskMessage.bind(coordinator));
 
-  const skillManager = new SkillManager();
-  const orchestrator = new Orchestrator(coordinator, skillManager);
+  const orchestrator = new Orchestrator(coordinator);
 
   const phoneServer = createServer();
   wsServer.attachToServer(phoneServer);
@@ -335,6 +350,8 @@ async function main() {
     cancelTask: async (deviceId, taskId) => { coordinator.cancelTask(deviceId, taskId); },
     executeSubTask: (deviceId, params, timeoutMs) => coordinator.executeSubTask(deviceId, params, timeoutMs),
     resumeOrchestration: (deviceId, params) => coordinator.resumeOrchestration(deviceId, params),
+    sendTaskStart: (deviceId, params) => coordinator.sendTaskStart(deviceId, params),
+    sendTaskEnd: (deviceId, params) => coordinator.sendTaskEnd(deviceId, params),
   };
 
   // Start MCP stdio protocol

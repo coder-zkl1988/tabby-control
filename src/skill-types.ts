@@ -1,6 +1,5 @@
 /**
- * Desktop-side skill data types.
- * Mirrors TabbyApp SkillModels.kt for parsing SKILL.md files.
+ * Skill data types for LLM-provided steps and interrupt handlers.
  */
 
 export interface RiskSignal {
@@ -8,10 +7,12 @@ export interface RiskSignal {
   action: string;
 }
 
-export interface GlobalHandler {
-  popup: string;
-  identification: string;
-  action: string;  // natural language e.g. "点击关闭按钮或X图标"
+/** Interrupt handler — strategies for handling interruptions during execution */
+export interface Handler {
+  name: string;       // e.g. "广告弹窗"
+  trigger: string;    // natural language detection cue
+  strategy: 'dismiss' | 'ignore' | 'report';
+  action?: string;    // natural language action (required when strategy = 'dismiss')
 }
 
 export interface IntentRoute {
@@ -57,7 +58,7 @@ export interface AppSkill {
   version: string;
   description: string;
   riskSignals: RiskSignal[];
-  globalHandlers: GlobalHandler[];
+  handlers: Handler[];
   intentRouting: IntentRoute[];
   operations: Map<string, Operation>;
 }

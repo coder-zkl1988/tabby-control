@@ -25,6 +25,8 @@ import type {
   SubTaskExecuteParams,
   OrchestrationResult,
   ResumeParams,
+  TaskStartParams,
+  TaskEndParams,
 } from './protocol.js';
 import {
   TaskResultSchema,
@@ -244,6 +246,32 @@ export class TaskCoordinator {
     if (!sent) throw new Error('DEVICE_OFFLINE');
 
     return this.waitForOrchestrationResult(params.taskId, deviceId);
+  }
+
+  /**
+   * Send task.start to a device with interrupt handler rules.
+   */
+  async sendTaskStart(deviceId: string, params: TaskStartParams): Promise<void> {
+    const sent = this.wsServer.sendToDevice(deviceId, {
+      channel: 'task',
+      method: 'task.start',
+      params: {
+        taskId: params.taskId,
+        handlers: params.handlers,
+      },
+    });
+    if (!sent) throw new Error('DEVICE_OFFLINE: failed to send task.start');
+  }
+
+  /**
+   * Send task.end to a device to signal task completion.
+   */
+  async sendTaskEnd(deviceId: string, params: TaskEndParams): Promise<void> {
+    this.wsServer.sendToDevice(deviceId, {
+      channel: 'task',
+      method: 'task.end',
+      params: { taskId: params.taskId },
+    });
   }
 
   /**

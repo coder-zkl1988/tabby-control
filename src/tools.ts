@@ -374,18 +374,16 @@ export function createExecuteSkillTool(orchestrator: Orchestrator, registry: Dev
     name: 'device_execute_skill',
     label: 'Execute Task with Skill Orchestration',
     description: [
-      'Execute a task using skill-based sub-task orchestration. Decomposes complex tasks into',
-      '≤3-step sub-tasks with skill hints for reliable execution. Use this instead of',
-      'device_execute_task when the target app has a known skill definition.',
+      'Execute a task using step-by-step sub-task orchestration.',
+      'Accepts `steps` and `handlers` from the LLM; the orchestrator mechanically',
+      'dispatches sub-tasks via the phone protocol.',
       '',
       'Benefits over device_execute_task:',
       '- Breaks complex tasks into reliable ≤3-step chunks',
-      '- Injects app-specific knowledge (accessibility selectors, visual prompts)',
-      '- Handles popups and errors according to app-specific rules',
-      '- Supports confirmation flow for write operations (posting, commenting)',
+      '- Injects step-specific hints (accessibility selectors, visual prompts)',
+      '- Handles popups and interruptions via handler rules',
       '',
       'The device MUST have skill support enabled (Tabby Agent app v2+).',
-      'Falls back to device_execute_task if no skill is available for the current app.',
     ].join('\n'),
     parameters: {
       type: 'object',
@@ -398,14 +396,41 @@ export function createExecuteSkillTool(orchestrator: Orchestrator, registry: Dev
           type: 'string',
           description: 'Natural language task description (Chinese or English). Not needed for action="resume".',
         },
-        currentApp: {
-          type: 'string',
-          description: 'Current app package name (e.g. "com.xingin.xhs"). If omitted, uses device\'s current app.',
-        },
         timeout: {
           type: 'number',
           description: 'Overall orchestration timeout in milliseconds (default: 600000)',
           default: 600000,
+        },
+        steps: {
+          type: 'array',
+          description: 'Ordered list of steps for the LLM to execute on device',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'Step name, e.g. "打开小红书首页"' },
+              type: { type: 'string', enum: ['deterministic', 'flexible'], description: 'Step execution mode' },
+              action: { type: 'string', description: 'Natural language action description' },
+              prompt: { type: 'string', description: 'VLM prompt for flexible steps' },
+              maxSteps: { type: 'number', description: 'Max VLM steps for this step' },
+              validation: { type: 'string', description: 'How to validate success' },
+            },
+            required: ['name', 'type'],
+          },
+        },
+        handlers: {
+          type: 'array',
+          description: 'Interrupt handling rules for this task',
+          items: {
+            type: 'object',
+            properties: {
+              name: { type: 'string', description: 'Handler name, e.g. 广告弹窗' },
+              trigger: { type: 'string', description: 'Natural language detection cue' },
+              strategy: { type: 'string', enum: ['dismiss', 'ignore', 'report'], description: 'How to handle it' },
+              action: { type: 'string', description: 'What to do (required for dismiss)' },
+            },
+            required: ['name', 'trigger', 'strategy'],
+          },
+          default: [],
         },
         action: {
           type: 'string',
@@ -430,7 +455,12 @@ export function createExecuteSkillTool(orchestrator: Orchestrator, registry: Dev
     },
     async execute(
       _id: string,
-      params: { deviceId?: string; task?: string; currentApp?: string; timeout?: number; action?: string; confirmed?: boolean; subtaskId?: string; taskId?: string },
+      params: {
+        deviceId?: string; task?: string; timeout?: number;
+        steps?: Array<{ name: string; type: string; action?: string; prompt?: string; maxSteps?: number; validation?: string }>;
+        handlers?: Array<{ name: string; trigger: string; strategy: string; action?: string }>;
+        action?: string; confirmed?: boolean; subtaskId?: string; taskId?: string;
+      },
     ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
       if (!params.deviceId) {
         return { content: [{ type: 'text', text: 'deviceId is required.' }], isError: true };
@@ -494,17 +524,27 @@ export function createExecuteSkillTool(orchestrator: Orchestrator, registry: Dev
         return { content: [{ type: 'text', text: 'deviceId and task are required.' }], isError: true };
       }
       try {
-        // Resolve currentApp if not provided
-        let currentApp = params.currentApp;
-        if (!currentApp) {
-          const deviceInfo = registry.get(params.deviceId)?.info;
-          currentApp = (deviceInfo as Record<string, unknown>)?.currentApp as string ?? '';
-        }
+        // Map LLM-provided steps and handlers to typed objects
+        const steps = (params.steps ?? []).map(s => ({
+          name: s.name,
+          type: s.type as 'deterministic' | 'flexible',
+          action: s.action,
+          prompt: s.prompt,
+          maxSteps: s.maxSteps,
+          validation: s.validation,
+        }));
+        const handlers = (params.handlers ?? []).map(h => ({
+          name: h.name,
+          trigger: h.trigger,
+          strategy: h.strategy as 'dismiss' | 'ignore' | 'report',
+          action: h.action,
+        }));
 
         const result = await orchestrator.executeSkillTask(
           params.deviceId,
           params.task,
-          currentApp ?? '',
+          steps,
+          handlers,
           Math.min(params.timeout ?? 600_000, 600_000),
         );
 

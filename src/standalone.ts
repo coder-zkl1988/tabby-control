@@ -12,7 +12,6 @@
 import { createServer } from 'http';
 import { DeviceRegistry, WsServer } from './ws-server.js';
 import { TaskCoordinator } from './task-coordinator.js';
-import { SkillManager } from './skill-manager.js';
 import { Orchestrator } from './orchestrator.js';
 import { MqttBroker } from './mqtt-broker.js';
 import { MqttPhoneProxy } from './mqtt-phone-proxy.js';
@@ -75,8 +74,7 @@ async function main() {
   );
 
   // ── Skill orchestration ──
-  const skillManager = new SkillManager();
-  const orchestrator = new Orchestrator(coordinator, skillManager);
+  const orchestrator = new Orchestrator(coordinator);
 
   // ── MQTT phone proxy (bridges MQTT → registry/coordinator) ──
   proxy = new MqttPhoneProxy(
@@ -138,16 +136,28 @@ async function main() {
               result = { cancelled: true };
               break;
             case 'device_execute_skill': {
-              const { deviceId, task, currentApp, timeoutMs } = params as {
-                deviceId: string; task: string; currentApp?: string; timeoutMs?: number;
+              const { deviceId, task, steps: rawSteps, handlers: rawHandlers, timeoutMs } = params as {
+                deviceId: string; task: string;
+                steps?: Array<{ name: string; type: string; action?: string; prompt?: string; maxSteps?: number; validation?: string }>;
+                handlers?: Array<{ name: string; trigger: string; strategy: string; action?: string }>;
+                timeoutMs?: number;
               };
-              let app = currentApp ?? '';
-              if (!app) {
-                const info = registry.get(deviceId)?.info as Record<string, unknown> | undefined;
-                app = (info?.currentApp as string) ?? '';
-              }
+              const steps = (rawSteps ?? []).map(s => ({
+                name: s.name,
+                type: s.type as 'deterministic' | 'flexible',
+                action: s.action,
+                prompt: s.prompt,
+                maxSteps: s.maxSteps,
+                validation: s.validation,
+              }));
+              const handlers = (rawHandlers ?? []).map(h => ({
+                name: h.name,
+                trigger: h.trigger,
+                strategy: h.strategy as 'dismiss' | 'ignore' | 'report',
+                action: h.action,
+              }));
               result = await orchestrator.executeSkillTask(
-                deviceId, task, app, timeoutMs ?? 600_000
+                deviceId, task, steps, handlers, timeoutMs ?? 600_000,
               );
               break;
             }
