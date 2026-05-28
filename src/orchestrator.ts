@@ -54,7 +54,7 @@ export class Orchestrator {
       const result = await this.coordinator.executeTask(deviceId, task, timeoutMs);
       return {
         success: result.success,
-        message: result.message,
+        message: result.message ?? '',
         completedSubTasks: result.success ? ['whole_task'] : [],
         failedSubTasks: result.success ? [] : ['whole_task'],
         screenshots: result.finalScreenshot ? [result.finalScreenshot] : [],
@@ -69,7 +69,7 @@ export class Orchestrator {
       const result = await this.coordinator.executeTask(deviceId, task, timeoutMs);
       return {
         success: result.success,
-        message: result.message,
+        message: result.message ?? '',
         completedSubTasks: result.success ? ['whole_task'] : [],
         failedSubTasks: result.success ? [] : ['whole_task'],
         screenshots: result.finalScreenshot ? [result.finalScreenshot] : [],

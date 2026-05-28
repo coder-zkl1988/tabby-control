@@ -258,7 +258,7 @@ function parseOperation(name: string, lines: string[]): Operation {
       const stratMatch = strategyRegex.exec(trimmed);
       if (stratMatch) {
         const acc = stratMatch[1].trim();
-        const existing = currentStep.strategy ?? {};
+        const existing: StrategyChain = currentStep.strategy ?? {};
         currentStep = {
           ...currentStep,
           strategy: { ...existing, accessibilitySelector: acc },
@@ -268,7 +268,7 @@ function parseOperation(name: string, lines: string[]): Operation {
       const visMatch = visualRegex.exec(trimmed);
       if (visMatch) {
         const vis = visMatch[1].trim();
-        const existing = currentStep.strategy ?? {};
+        const existing: StrategyChain = currentStep.strategy ?? {};
         currentStep = {
           ...currentStep,
           strategy: { ...existing, visualPrompt: vis },
