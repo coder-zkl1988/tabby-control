@@ -12,6 +12,8 @@
 import { createServer } from 'http';
 import { DeviceRegistry, WsServer } from './ws-server.js';
 import { TaskCoordinator } from './task-coordinator.js';
+import { SkillManager } from './skill-manager.js';
+import { Orchestrator } from './orchestrator.js';
 import { MqttBroker } from './mqtt-broker.js';
 import { MqttPhoneProxy } from './mqtt-phone-proxy.js';
 
@@ -72,6 +74,10 @@ async function main() {
     ipcNotifier,
   );
 
+  // ── Skill orchestration ──
+  const skillManager = new SkillManager();
+  const orchestrator = new Orchestrator(coordinator, skillManager);
+
   // ── MQTT phone proxy (bridges MQTT → registry/coordinator) ──
   proxy = new MqttPhoneProxy(
     mqttBroker,
@@ -111,24 +117,40 @@ async function main() {
           const { method, params } = JSON.parse(body) as { method: string; params: Record<string, unknown> };
           let result: unknown;
 
-          switch (method) {
-            case 'device.list':
+          // Accept both dot notation (device.execute_task) and underscore notation (device_execute_task)
+          const normalizedMethod = method.replace('.', '_');
+          switch (normalizedMethod) {
+            case 'device_list':
               result = registry.list();
               break;
-            case 'device.get_status':
+            case 'device_get_status':
               result = coordinator.getDeviceStatus(params.deviceId as string);
               break;
-            case 'device.execute_task':
+            case 'device_execute_task':
               result = await coordinator.executeTask(
                 params.deviceId as string,
                 params.task as string,
                 (params.timeoutMs as number) ?? 300_000,
               );
               break;
-            case 'device.cancel_task':
+            case 'device_cancel_task':
               coordinator.cancelTask(params.deviceId as string, params.taskId as string);
               result = { cancelled: true };
               break;
+            case 'device_execute_skill': {
+              const { deviceId, task, currentApp, timeoutMs } = params as {
+                deviceId: string; task: string; currentApp?: string; timeoutMs?: number;
+              };
+              let app = currentApp ?? '';
+              if (!app) {
+                const info = registry.get(deviceId)?.info as Record<string, unknown> | undefined;
+                app = (info?.currentApp as string) ?? '';
+              }
+              result = await orchestrator.executeSkillTask(
+                deviceId, task, app, timeoutMs ?? 600_000
+              );
+              break;
+            }
             default:
               res.writeHead(400, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: { code: 'UNKNOWN_METHOD', message: `Unknown method: ${method}` } }));
