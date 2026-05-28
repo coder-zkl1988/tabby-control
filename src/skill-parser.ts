@@ -9,7 +9,6 @@ import type {
   AppSkill,
   RiskSignal,
   GlobalHandler,
-  StrategyChain,
   IntentRoute,
   Operation,
   OpParam,
@@ -89,31 +88,6 @@ function parseTableSection(body: string, heading: string): string[][] {
 }
 
 // ---------------------------------------------------------------------------
-// Strategy chain
-// ---------------------------------------------------------------------------
-
-/**
- * Parse a strategy string like:
- *   "关闭（1. accessibility:`id/iv_close` 2. visual:"关闭按钮"）"
- * into a {@link StrategyChain}.
- */
-function parseStrategyChain(strategyStr: string): StrategyChain | undefined {
-  const accRegex = /accessibility:\s*`?([^`\s)]+)`?/;
-  const visRegex = /visual:\s*"?([^"）]+)"?/;
-
-  const accMatch = accRegex.exec(strategyStr);
-  const visMatch = visRegex.exec(strategyStr);
-
-  const acc = accMatch?.[1];
-  const vis = visMatch?.[1]?.trim();
-
-  if (acc != null || vis != null) {
-    return { accessibilitySelector: acc, visualPrompt: vis };
-  }
-  return undefined;
-}
-
-// ---------------------------------------------------------------------------
 // Section parsers
 // ---------------------------------------------------------------------------
 
@@ -130,12 +104,10 @@ function parseGlobalHandlers(body: string): GlobalHandler[] {
   const rows = parseTableSection(body, '全局弹窗处理');
   // Drop header row
   return rows.slice(1).map((row) => {
-    const strategyStr = row[2] ?? '';
     return {
       popup: row[0] ?? '',
       identification: row[1] ?? '',
-      strategy: strategyStr,
-      strategyChain: parseStrategyChain(strategyStr),
+      action: row[2] ?? '',
     };
   });
 }
@@ -194,8 +166,6 @@ function parseOperation(name: string, lines: string[]): Operation {
   const confirmRegex = /\*\*需要确认\*\*:\s*(true|false)/;
   const stepRegex = /\*\*Step \d+:\s*(.+)\*\*/;
   const typeRegex = /-\s*类型[：:]\s*(deterministic|flexible)/;
-  const strategyRegex = /\d+\.\s*accessibility:\s*`?([^`\n]+)`?/;
-  const visualRegex = /\d+\.\s*visual:\s*"?([^"\n]+)"?/;
   const actionRegex = /-\s*动作[：:]\s*(.+)/;
   const promptRegex = /-\s*提示[：:]\s*(.+)/;
   const maxStepsRegex = /-\s*maxSteps[：:]\s*(\d+)/;
@@ -252,26 +222,6 @@ function parseOperation(name: string, lines: string[]): Operation {
         currentStep = {
           ...currentStep,
           type: typeMatch[1] === 'flexible' ? 'flexible' : 'deterministic',
-        };
-      }
-
-      const stratMatch = strategyRegex.exec(trimmed);
-      if (stratMatch) {
-        const acc = stratMatch[1].trim();
-        const existing: StrategyChain = currentStep.strategy ?? {};
-        currentStep = {
-          ...currentStep,
-          strategy: { ...existing, accessibilitySelector: acc },
-        };
-      }
-
-      const visMatch = visualRegex.exec(trimmed);
-      if (visMatch) {
-        const vis = visMatch[1].trim();
-        const existing: StrategyChain = currentStep.strategy ?? {};
-        currentStep = {
-          ...currentStep,
-          strategy: { ...existing, visualPrompt: vis },
         };
       }
 

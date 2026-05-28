@@ -1,7 +1,7 @@
 import type { TaskCoordinator } from './task-coordinator.js';
 import type { SkillManager } from './skill-manager.js';
 import type { OrchestrationResult, SubTaskExecuteParams, SkillHint, SubTaskStatus } from './protocol.js';
-import type { AppSkill, Operation, SkillStep, StrategyChain } from './skill-types.js';
+import type { AppSkill, GlobalHandler, Operation, SkillStep } from './skill-types.js';
 
 interface SubTaskPlan {
   subtaskId: string;
@@ -300,7 +300,7 @@ export class Orchestrator {
 
           case 'blocked': {
             const handler = this.skillManager.findGlobalHandler(currentApp, result.blockReason);
-            if (handler?.strategyChain) {
+            if (handler) {
               console.log(`[Orchestrator] Blocked by popup, dispatching handler: ${handler.popup}`);
               const handlerPlan: SubTaskPlan = {
                 subtaskId: `${plan.subtaskId}_handler_${Date.now()}`,
@@ -308,7 +308,7 @@ export class Orchestrator {
                 context: result.blockReason,
                 maxSteps: 2,
                 timeoutMs: 10_000,
-                skillHint: this.buildSkillHintFromChain(handler.strategyChain),
+                skillHint: this.buildSkillHintFromHandler(handler),
               };
               try {
                 const handlerResult = await this.coordinator.executeSubTask(deviceId, {
@@ -447,50 +447,28 @@ export class Orchestrator {
     return plans;
   }
 
-  /**
-   * Build SkillHint from a Step's strategy chain per §5.2
-   */
   private buildSkillHintFromStep(step: SkillStep): SkillHint | undefined {
-    if (step.strategy) {
-      const parts: string[] = [];
-      if (step.strategy.accessibilitySelector) {
-        parts.push(`accessibility:${step.strategy.accessibilitySelector}`);
-      }
-      if (step.strategy.visualPrompt) {
-        parts.push(`visual:"${step.strategy.visualPrompt}"`);
-      }
-      if (parts.length > 0) {
-        return {
-          targetElement: step.strategy.accessibilitySelector ?? step.strategy.visualPrompt ?? step.name,
-          strategy: parts.join(' → '),
-          validation: step.validation ?? '',
-        };
-      }
+    if (step.action) {
+      return {
+        targetElement: step.action,
+        action: step.action,
+        validation: step.validation ?? '',
+      };
     }
     if (step.prompt) {
       return {
         targetElement: step.name,
-        strategy: `prompt:"${step.prompt}"`,
+        action: step.prompt,
         validation: step.validation ?? '',
       };
     }
     return undefined;
   }
 
-  /**
-   * Build SkillHint from a GlobalHandler's strategy chain
-   */
-  private buildSkillHintFromChain(chain: StrategyChain): SkillHint {
-    const parts: string[] = [];
-    if (chain.accessibilitySelector) {
-      parts.push(`accessibility:${chain.accessibilitySelector}`);
-    }
-    if (chain.visualPrompt) {
-      parts.push(`visual:"${chain.visualPrompt}"`);
-    }
+  private buildSkillHintFromHandler(handler: GlobalHandler): SkillHint {
     return {
-      targetElement: chain.accessibilitySelector ?? chain.visualPrompt ?? '',
-      strategy: parts.join(' → '),
+      targetElement: handler.action,
+      action: handler.action,
       validation: '',
     };
   }

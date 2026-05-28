@@ -1,8 +1,8 @@
 ---
 name: xiaohongshu
 app: com.xingin.xhs
-version: 1.0.0
-description: 小红书操作技能
+version: 2.0.0
+description: 小红书操作技能（自然语言版）
 ---
 
 # 小红书技能
@@ -18,12 +18,12 @@ description: 小红书操作技能
 
 ## 全局弹窗处理
 
-| 弹窗 | 识别 | 策略 |
+| 弹窗 | 识别 | 处理 |
 |------|------|------|
-| 登录弹窗 | 发现登录界面 | 上报 blocked |
-| 更新弹窗 | "立即更新"文字 | 关闭（1. accessibility:`id/iv_close` 2. visual:"关闭按钮"） |
-| 通知权限 | "开启通知"文字 | 拒绝（1. accessibility:`id/btn_deny` 2. visual:"拒绝按钮"） |
-| 广告弹窗 | 全屏广告覆盖 | 关闭（1. accessibility:`id/iv_close` 2. visual:"右上角关闭"） |
+| 登录弹窗 | 发现登录界面 | 无法处理，上报 blocked |
+| 更新弹窗 | 发现"立即更新"文字 | 点击右上角或弹窗上的关闭按钮（X图标） |
+| 通知权限 | 发现"开启通知"文字 | 点击"拒绝"或"以后再说"按钮 |
+| 广告弹窗 | 发现全屏广告覆盖 | 找到并点击关闭按钮（通常在右上角） |
 
 ## 意图路由
 
@@ -46,26 +46,19 @@ description: 小红书操作技能
 **Step 1: 点击搜索入口**
 
 - 类型：deterministic
-- 策略：
-  1. accessibility: `com.xingin.xhs:id/search_btn`
-  2. visual: "点击搜索框（屏幕顶部的放大镜图标）"
+- 动作：点击屏幕顶部的搜索图标（放大镜形状的按钮）
 - 验证：搜索输入框出现
 
 **Step 2: 输入搜索词**
 
 - 类型：deterministic
-- 策略：
-  1. accessibility: `com.xingin.xhs:id/search_input`
-  2. visual: "点击搜索输入框，输入关键词"
-- 动作：Type(keyword)
+- 动作：点击搜索输入框，输入关键词
 - 验证：输入框显示搜索词
 
 **Step 3: 提交搜索**
 
 - 类型：deterministic
-- 策略：
-  1. accessibility: `com.xingin.xhs:id/search_btn` (键盘搜索键)
-  2. visual: "点击键盘上的搜索按钮"
+- 动作：点击键盘上的搜索按钮
 - 验证：搜索结果列表出现
 
 **失败处理**:
@@ -89,9 +82,7 @@ description: 小红书操作技能
 **Step 1: 进入发布页面**
 
 - 类型：deterministic
-- 策略：
-  1. accessibility: `com.xingin.xhs:id/iv_publish`
-  2. visual: "点击底部中间的红色+号发布按钮"
+- 动作：点击底部中间的红色+号发布按钮
 - 验证：发布页面打开
 
 **Step 2: 选择图片**
@@ -104,24 +95,19 @@ description: 小红书操作技能
 **Step 3: 填写标题和正文**
 
 - 类型：deterministic
-- 策略：
-  1. accessibility: `com.xingin.xhs:id/title_edittext` → Type(title)
-  2. accessibility: `com.xingin.xhs:id/content_edittext` → Type(content)
-  3. visual: "填写标题和正文"
+- 动作：在标题输入框填写标题，在正文输入框填写正文
 - 验证：标题和正文已填写
 
 **Step 4: 上报桌面确认**
 
 - 类型：deterministic
-- 动作：上报当前截图和填写内容给桌面端
-- 等待桌面端确认指令
+- 动作：上报当前截图和填写内容给桌面端，等待确认指令
+- 验证：收到确认或取消指令
 
 **Step 5: 点击发布**
 
 - 类型：deterministic
-- 策略：
-  1. accessibility: `com.xingin.xhs:id/publish_btn`
-  2. visual: "点击发布按钮"
+- 动作：点击右上角的发布按钮
 - 验证：发布成功提示出现
 
 **失败处理**:
@@ -153,13 +139,11 @@ description: 小红书操作技能
 **Step 2: 执行互动操作**
 
 - 类型：deterministic（like/collect/follow）/ flexible（comment）
-- 策略（like）：
-  1. accessibility: `com.xingin.xhs:id/like_btn`
-  2. visual: "点击爱心图标点赞"
-- 策略（comment）：
-  - 提示：找到评论输入框，输入评论内容并发送
-  - maxSteps: 3
-  - 注意两次评论间隔 ≥ 8 秒
+- 动作（like）：点击笔记下方的爱心图标
+- 动作（collect）：点击笔记下方的收藏图标（五角星）
+- 动作（follow）：点击作者名称旁的关注按钮
+- 提示（comment）：找到评论输入框，输入评论内容并发送。两次评论间距 ≥ 8 秒
+- maxSteps: 3（仅comment）
 - 验证：操作生效
 
 **失败处理**:

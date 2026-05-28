@@ -3,11 +3,6 @@
  * Mirrors TabbyApp SkillModels.kt for parsing SKILL.md files.
  */
 
-export interface StrategyChain {
-  accessibilitySelector?: string;
-  visualPrompt?: string;
-}
-
 export interface RiskSignal {
   signal: string;
   action: string;
@@ -16,8 +11,7 @@ export interface RiskSignal {
 export interface GlobalHandler {
   popup: string;
   identification: string;
-  strategy: string;
-  strategyChain?: StrategyChain;
+  action: string;  // natural language e.g. "点击关闭按钮或X图标"
 }
 
 export interface IntentRoute {
@@ -38,9 +32,8 @@ export type StepType = 'deterministic' | 'flexible';
 export interface SkillStep {
   name: string;
   type: StepType;
-  strategy?: StrategyChain;
-  action?: string;
-  prompt?: string;
+  action?: string;     // natural language description for deterministic steps
+  prompt?: string;     // prompt guiding VLM for flexible steps
   maxSteps?: number;
   validation?: string;
 }

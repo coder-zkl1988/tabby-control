@@ -80,7 +80,7 @@ export type ExecuteParams = z.infer<typeof ExecuteParamsSchema>;
 
 export const SkillHintSchema = z.object({
   targetElement: z.string(),
-  strategy: z.string(),
+  action: z.string(),
   validation: z.string().optional().default(''),
 });
 export type SkillHint = z.infer<typeof SkillHintSchema>;
