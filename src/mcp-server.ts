@@ -17,6 +17,8 @@
 import { createServer } from 'http';
 import { WsServer } from './ws-server.js';
 import { TaskCoordinator } from './task-coordinator.js';
+import { SkillManager } from './skill-manager.js';
+import { Orchestrator } from './orchestrator.js';
 import type { DeviceBridge } from './protocol.js';
 
 // ── Redirect console.log to stderr (stdout is MCP protocol) ──
@@ -42,11 +44,13 @@ interface JsonRpcMessage {
 
 class McpServer {
   private bridge: DeviceBridge;
+  private orchestrator: Orchestrator | null;
   private initialized = false;
   private buffer = '';
 
-  constructor(bridge: DeviceBridge) {
+  constructor(bridge: DeviceBridge, orchestrator?: Orchestrator) {
     this.bridge = bridge;
+    this.orchestrator = orchestrator ?? null;
   }
 
   start() {
@@ -159,6 +163,20 @@ class McpServer {
                   required: ["deviceId", "taskId"],
                 },
               },
+              {
+                name: "device_execute_skill",
+                description: "Execute a task using skill-based sub-task orchestration. Decomposes complex tasks into ≤3-step sub-tasks with skill hints. Falls back to device_execute_task if no skill is available.",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    deviceId: { type: "string", description: "Device ID from device_list" },
+                    task: { type: "string", description: "Natural language task description" },
+                    currentApp: { type: "string", description: "Current app package name (optional, uses device's current app if omitted)" },
+                    timeout: { type: "number", description: "Timeout in milliseconds", default: 600000 },
+                  },
+                  required: ["deviceId", "task"],
+                },
+              },
             ],
           });
           break;
@@ -206,6 +224,25 @@ class McpServer {
               });
               break;
             }
+            case 'device_execute_skill': {
+              if (!this.orchestrator) {
+                this.sendError(id, -32603, 'device_execute_skill not available (no orchestrator)');
+                break;
+              }
+              const deviceId = args.deviceId as string;
+              const task = args.task as string;
+              const currentApp = (args.currentApp as string) ?? '';
+              const timeout = Math.min((args.timeout as number) ?? 600_000, 600_000);
+              const result = await this.orchestrator.executeSkillTask(deviceId, task, currentApp, timeout);
+              const text = result.success
+                ? `✅ Skill task completed\nSub-tasks: ${result.completedSubTasks.length} ok, ${result.failedSubTasks.length} failed`
+                : `❌ Skill task failed: ${result.message}`;
+              this.send(id, {
+                content: [{ type: "text", text }],
+                isError: !result.success,
+              });
+              break;
+            }
             default:
               this.sendError(id, -32601, `Unknown tool: ${name}`);
           }
@@ -238,6 +275,9 @@ async function main() {
   const coordinator = new TaskCoordinator(wsServer, ipcNotifier);
   wsServer.setTaskMessageHandler(coordinator.handleTaskMessage.bind(coordinator));
 
+  const skillManager = new SkillManager();
+  const orchestrator = new Orchestrator(coordinator, skillManager);
+
   const phoneServer = createServer();
   wsServer.attachToServer(phoneServer);
   phoneServer.listen(wsPort, '0.0.0.0', () => {
@@ -256,10 +296,11 @@ async function main() {
     executeTaskAll: (task, timeoutMs) => coordinator.executeTaskAll(task, timeoutMs).then(m => Object.fromEntries(m)),
     executeBatch: (tasks, timeoutMs) => coordinator.executeBatch(tasks, timeoutMs).then(m => Object.fromEntries(m)),
     cancelTask: async (deviceId, taskId) => { coordinator.cancelTask(deviceId, taskId); },
+    executeSubTask: (deviceId, params, timeoutMs) => coordinator.executeSubTask(deviceId, params, timeoutMs),
   };
 
   // Start MCP stdio protocol
-  const mcp = new McpServer(bridge);
+  const mcp = new McpServer(bridge, orchestrator);
   mcp.start();
 }
 

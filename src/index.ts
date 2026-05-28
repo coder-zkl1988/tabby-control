@@ -11,7 +11,9 @@ import { TaskCoordinator } from './task-coordinator.js';
 import { MqttBroker } from './mqtt-broker.js';
 import { MqttPhoneProxy } from './mqtt-phone-proxy.js';
 import { BridgeClient } from './bridge.js';
-import type { DeviceBridge, TaskResult } from './protocol.js';
+import { SkillManager } from './skill-manager.js';
+import { Orchestrator } from './orchestrator.js';
+import type { DeviceBridge, TaskResult, SubTaskResult, SubTaskExecuteParams } from './protocol.js';
 import {
   createDeviceListTool,
   createExecuteTaskTool,
@@ -19,6 +21,7 @@ import {
   createExecuteBatchTool,
   createCancelTaskTool,
   createGetStatusTool,
+  createExecuteSkillTool,
 } from './tools.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -101,6 +104,10 @@ class InProcessBridge {
   async getStatus(deviceId: string) {
     return this.coordinator.getDeviceStatus(deviceId);
   }
+
+  async executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs?: number): Promise<SubTaskResult> {
+    return this.coordinator.executeSubTask(deviceId, params, timeoutMs);
+  }
 }
 
 // ─── HTTP RPC server ───────────────────────────────────────────────────────────
@@ -146,7 +153,9 @@ function startHttpServer(
           const { method, params } = JSON.parse(body) as { method: string; params: Record<string, unknown> };
           let result: unknown;
 
-          switch (method) {
+          // Accept both dot notation (device.execute_task) and underscore notation (device_execute_task)
+          const normalizedMethod = method.replace('.', '_');
+          switch (normalizedMethod) {
             case 'device_list':
               result = await bridge.listDevices();
               break;
@@ -280,13 +289,20 @@ export default {
       async executeBatch(tasks: Array<{ deviceId: string; task: string }>, timeoutMs?: number) { return (await this._get()).executeBatch(tasks, timeoutMs); }
       async cancelTask(deviceId: string, taskId: string) { return (await this._get()).cancelTask(deviceId, taskId); }
       async getStatus(deviceId: string) { return (await this._get()).getStatus(deviceId); }
+      async executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs?: number) {
+        return (await this._get()).executeSubTask(deviceId, params, timeoutMs);
+      }
     }
+
+    let _orchestrator: Orchestrator | null = null;
 
     const bridgePromise = new Promise<DeviceBridge>((resolve) => {
       httpServer.once('listening', () => {
         // Gateway worker: port available → full setup
         const coordinator = new TaskCoordinator(wsServer, ipcNotifier);
         wsServer.setTaskMessageHandler(coordinator.handleTaskMessage.bind(coordinator));
+        const skillManager = new SkillManager();
+        _orchestrator = new Orchestrator(coordinator, skillManager);
         wsServer.setMirrorHandler({
           onClick: (deviceId: string, params: Record<string, unknown>) => {
             logger.debug(`[tabby-control] mirror click ${deviceId}: ${JSON.stringify(params)}`);
@@ -333,8 +349,14 @@ export default {
     api.registerTool(makeTool(createExecuteBatchTool));
     api.registerTool(makeTool(createCancelTaskTool));
     api.registerTool(makeTool(createGetStatusTool));
+    api.registerTool(() => {
+      if (!_orchestrator) return null;
+      const tool = createExecuteSkillTool(_orchestrator, wsServer.getRegistry()) as TabbyTool;
+      tool.isAvailable = () => true;
+      return tool;
+    });
 
-    logger.info('[tabby-control] registered 6 device control tools (lazy bridge)');
+    logger.info('[tabby-control] registered 7 device control tools (lazy bridge)');
 
     // Start server in background
     httpServer.listen(config.wsPort, '0.0.0.0', () => {

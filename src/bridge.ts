@@ -8,7 +8,7 @@
  * the WebSocket port is already bound by the gateway worker.
  */
 
-import type { DeviceInfo, TaskResult } from './protocol.js';
+import type { DeviceInfo, TaskResult, SubTaskExecuteParams, SubTaskResult } from './protocol.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -123,5 +123,13 @@ export class BridgeClient {
 
   async getStatus(deviceId: string): Promise<DeviceInfo | null> {
     return this.call<DeviceInfo | null>('device_get_status', { deviceId });
+  }
+
+  async executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs?: number): Promise<SubTaskResult> {
+    return this.call<SubTaskResult>('device_execute_subtask', {
+      deviceId,
+      ...params,
+      timeoutMs,
+    });
   }
 }

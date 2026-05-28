@@ -8,6 +8,8 @@
 
 import type { DeviceBridge } from './protocol.js';
 import type { DeviceInfo, TaskResult } from './protocol.js';
+import type { Orchestrator } from './orchestrator.js';
+import type { DeviceRegistry } from './ws-server.js';
 
 // ─── Tool factory helpers ─────────────────────────────────────────────────────
 
@@ -362,6 +364,96 @@ export function createCancelTaskTool(client: DeviceBridge) {
           content: [{ type: 'text', text: `device_cancel_task failed: ${msg}` }],
           isError: true,
         };
+      }
+    },
+  };
+}
+
+export function createExecuteSkillTool(orchestrator: Orchestrator, registry: DeviceRegistry) {
+  return {
+    name: 'device_execute_skill',
+    label: 'Execute Task with Skill Orchestration',
+    description: [
+      'Execute a task using skill-based sub-task orchestration. Decomposes complex tasks into',
+      '≤3-step sub-tasks with skill hints for reliable execution. Use this instead of',
+      'device_execute_task when the target app has a known skill definition.',
+      '',
+      'Benefits over device_execute_task:',
+      '- Breaks complex tasks into reliable ≤3-step chunks',
+      '- Injects app-specific knowledge (accessibility selectors, visual prompts)',
+      '- Handles popups and errors according to app-specific rules',
+      '- Supports confirmation flow for write operations (posting, commenting)',
+      '',
+      'The device MUST have skill support enabled (Tabby Agent app v2+).',
+      'Falls back to device_execute_task if no skill is available for the current app.',
+    ].join('\n'),
+    parameters: {
+      type: 'object',
+      properties: {
+        deviceId: {
+          type: 'string',
+          description: 'Device ID from device_list',
+        },
+        task: {
+          type: 'string',
+          description: 'Natural language task description (Chinese or English)',
+        },
+        currentApp: {
+          type: 'string',
+          description: 'Current app package name (e.g. "com.xingin.xhs"). If omitted, uses device\'s current app.',
+        },
+        timeout: {
+          type: 'number',
+          description: 'Overall orchestration timeout in milliseconds (default: 600000)',
+          default: 600000,
+        },
+      },
+      required: ['deviceId', 'task'],
+    },
+    async execute(
+      _id: string,
+      params: { deviceId?: string; task?: string; currentApp?: string; timeout?: number },
+    ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+      if (!params.deviceId || !params.task) {
+        return { content: [{ type: 'text', text: 'deviceId and task are required.' }], isError: true };
+      }
+      try {
+        // Resolve currentApp if not provided
+        let currentApp = params.currentApp;
+        if (!currentApp) {
+          const deviceInfo = registry.get(params.deviceId)?.info;
+          currentApp = (deviceInfo as Record<string, unknown>)?.currentApp as string ?? '';
+        }
+
+        const result = await orchestrator.executeSkillTask(
+          params.deviceId,
+          params.task,
+          currentApp ?? '',
+          Math.min(params.timeout ?? 600_000, 600_000),
+        );
+
+        const sections: string[] = [];
+        if (result.success) {
+          sections.push(`✅ Skill task completed`);
+        } else {
+          sections.push(`❌ Skill task failed: ${result.message}`);
+        }
+        sections.push(`Sub-tasks completed: ${result.completedSubTasks.length}`);
+        sections.push(`Sub-tasks failed: ${result.failedSubTasks.length}`);
+        if (result.completedSubTasks.length > 0) {
+          sections.push(`Completed: ${result.completedSubTasks.join(', ')}`);
+        }
+        if (result.failedSubTasks.length > 0) {
+          sections.push(`Failed: ${result.failedSubTasks.join(', ')}`);
+        }
+        if (result.screenshots.length > 0) {
+          sections.push(`\n📸 ${result.screenshots.length} screenshot(s) captured`);
+        }
+
+        return { content: [{ type: 'text', text: sections.join('\n') }], isError: !result.success };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return { content: [{ type: 'text', text: `device_execute_skill failed: ${msg}` }], isError: true };
       }
     },
   };
