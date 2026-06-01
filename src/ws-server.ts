@@ -338,6 +338,20 @@ export class WsServer {
     return true;
   }
 
+  /**
+   * Send a binary frame to a device. Returns false if the device is not connected.
+   */
+  sendBinaryToDevice(deviceId: string, data: Buffer): boolean {
+    const session = this.registry.get(deviceId);
+    if (!session || session.ws.readyState !== WebSocket.OPEN) {
+      console.log(`[tabby-control] sendBinaryToDevice(${deviceId}) SKIPPED - not connected`);
+      return false;
+    }
+    session.ws.send(data, { binary: true });
+    flog(`SEND BINARY TO DEVICE: device=${deviceId}, size=${data.length}`);
+    return true;
+  }
+
 /**
    * Attach WebSocket upgrade handler to the Tabby gateway HTTP server.
    * Uses prependListener so our handler runs before Tabby's own
@@ -653,8 +667,11 @@ export class WsServer {
 
     ws.on('message', (data, isBinary) => {
       if (isBinary) {
-        // Binary messages from mirror client are control commands sent as binary
-        // Currently we don't expect binary from mirror clients, so ignore
+        // Binary control frames from mirror client → forward to phone
+        if (subscribedDeviceId) {
+          this.sendBinaryToDevice(subscribedDeviceId, data as Buffer);
+          flog(`MIRROR BINARY FWD: device=${subscribedDeviceId}, size=${(data as Buffer).length}`);
+        }
         return;
       }
 
@@ -696,11 +713,8 @@ export class WsServer {
         if (subscribedDeviceId) {
           const channel = msg.channel as string;
           if (channel === 'mirror') {
-            const type = msg.type as string;
-            if (type === 'click' || type === 'swipe' || type === 'input_text' || type === 'press_key') {
-              flog(`MIRROR ACTION: device=${subscribedDeviceId}, type=${type}, msg=${JSON.stringify(msg)}`);
-              this.sendToDevice(subscribedDeviceId, msg);
-            }
+            flog(`MIRROR ACTION: device=${subscribedDeviceId}, type=${msg.type}, msg=${JSON.stringify(msg)}`);
+            this.sendToDevice(subscribedDeviceId, msg);
           }
         }
       } catch (err) {
