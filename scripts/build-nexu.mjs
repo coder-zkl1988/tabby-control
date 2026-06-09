@@ -5,7 +5,7 @@
  * that can be copied into Tabby's .dist-runtime/plugins/.
  *
  * Usage: node scripts/build-nexu.mjs
- *   or:  pnpm build:nexu
+ *   or:  npm run build:nexu
  */
 import { cp, mkdir, rm } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -17,7 +17,7 @@ const PLUGIN_ROOT = path.resolve(__dirname, "..");
 const OUTPUT_DIR = path.join(PLUGIN_ROOT, "dist-nexu", "tabby-control");
 
 console.log("[nexu-build] Building plugin...");
-execSync("pnpm build", { cwd: PLUGIN_ROOT, stdio: "inherit" });
+execSync("npm run build", { cwd: PLUGIN_ROOT, stdio: "inherit" });
 
 console.log("[nexu-build] Assembling deployable directory...");
 await rm(OUTPUT_DIR, { recursive: true, force: true });
