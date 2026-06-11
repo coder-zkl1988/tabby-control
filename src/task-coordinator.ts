@@ -372,11 +372,12 @@ export class TaskCoordinator {
 
       const pending = this.pending.get(taskId as TaskId);
       console.log(`[tabby-control] pending.get(${taskId}) = ${pending ? 'FOUND' : 'NOT FOUND'}`);
+
+      const parsed = TaskResultSchema.safeParse(result);
       if (pending) {
         clearTimeout(pending.timeout);
         this.pending.delete(taskId as TaskId);
 
-        const parsed = TaskResultSchema.safeParse(result);
         if (parsed.success) {
           // Replace base64 screenshot with file path
           const enriched = this.enrichResultWithScreenshot(parsed.data);
@@ -384,18 +385,22 @@ export class TaskCoordinator {
         } else {
           pending.reject(new Error(`Invalid result from device: ${JSON.stringify(result)}`));
         }
-
-        this.wsServer.getRegistry().updateStatus(deviceId, {
-          status: 'idle',
-          currentTaskId: undefined,
-        });
-        this.ipcNotifier('device:status_change', {
-          deviceId,
-          status: 'idle',
-          taskId: undefined,
-        });
-        this.ipcNotifier('device:task_result', { deviceId, result: parsed.data ?? result });
       }
+
+      // Status reset + notification must run even when no pending entry exists:
+      // after an interaction_request resolves the promise early, the phone may
+      // auto-continue (its 60s guidance window expires) and still deliver the
+      // final result here — dropping it would leave the UI without an outcome.
+      this.wsServer.getRegistry().updateStatus(deviceId, {
+        status: 'idle',
+        currentTaskId: undefined,
+      });
+      this.ipcNotifier('device:status_change', {
+        deviceId,
+        status: 'idle',
+        taskId: undefined,
+      });
+      this.ipcNotifier('device:task_result', { deviceId, result: parsed.success ? parsed.data : result });
       return;
     }
 
@@ -453,6 +458,26 @@ export class TaskCoordinator {
             needsInteraction: true,
             interactionMessage: interactionReq.message,
             interactionScreenshot: screenshotForIpc,
+          });
+        }
+      }
+
+      // Self-heal: the interaction_request path above marks the device idle so
+      // guidance can be dispatched. If the phone's 60s guidance window expires
+      // it auto-continues the task — progress arriving for an "idle" device
+      // means the loop is actually still running, so flip it back to busy and
+      // keep executeTask from dispatching a second task onto it.
+      if (!interactionReq && params.taskId) {
+        const device = this.wsServer.getRegistry().get(deviceId);
+        if (device && device.info.status === 'idle') {
+          this.wsServer.getRegistry().updateStatus(deviceId, {
+            status: 'busy',
+            currentTaskId: String(params.taskId) as TaskId,
+          });
+          this.ipcNotifier('device:status_change', {
+            deviceId,
+            status: 'busy',
+            taskId: params.taskId,
           });
         }
       }

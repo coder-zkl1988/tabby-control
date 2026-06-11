@@ -213,6 +213,13 @@ export type StepRecord = z.infer<typeof StepRecordSchema>;
 export const TaskResultSchema = z.object({
   taskId: TaskIdSchema,
   success: z.boolean(),
+  // Final loop status from the phone. Known values: completed | aborted |
+  // stuck | needs_takeover | blocked | error. "aborted" is the model's own
+  // legitimate decision (task impossible); "error" is an infrastructure
+  // failure. Plain string so new phone-side values never reject the result.
+  status: z.string().optional(),
+  // Phone-side session id, echoed back so guidance replies can be correlated.
+  sessionId: z.string().optional(),
   message: z.string().optional(),
   totalSteps: z.number().int().min(0).optional(),
   steps: z.array(StepRecordSchema).optional(),
