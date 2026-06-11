@@ -64,9 +64,20 @@ function formatTaskResult(result: TaskResult, deviceId: string): string {
         sections.push(`${s.step}. [${s.success ? '✅' : '❌'}] ${s.action}${s.target ? ` → ${s.target}` : ''}`);
       }
     }
+  } else if (result.status === 'aborted') {
+    // The phone-side model deliberately gave up (task judged impossible) —
+    // not an infrastructure error, so a verbatim retry will abort again.
+    sections.push(`🛑 Task aborted by the device agent: ${result.message ?? 'no reason given'}`);
+    sections.push(`This was the on-device model's own decision, not a system error. Re-phrase the task or provide more specific guidance instead of retrying verbatim.`);
+    if (result.totalSteps !== undefined) sections.push(`Steps before abort: ${result.totalSteps}`);
+  } else if (result.status === 'stuck') {
+    sections.push(`🔁 Task stuck (no screen progress detected): ${result.message ?? 'Unknown'}`);
+    sections.push(`Retrying with different guidance (e.g. an alternative entry point) may help.`);
+    if (result.totalSteps !== undefined) sections.push(`Steps: ${result.totalSteps}`);
   } else {
-    sections.push(`❌ Task failed: ${result.message ?? 'Unknown error'}`);
+    sections.push(`❌ Task failed${result.status ? ` (${result.status})` : ''}: ${result.message ?? 'Unknown error'}`);
     if (result.failedAtStep !== undefined) sections.push(`Failed at step ${result.failedAtStep}`);
+    if (result.totalSteps !== undefined) sections.push(`Steps: ${result.totalSteps}`);
   }
 
   // Append final screenshot as file path (plugin saved it to taskData directory)
@@ -86,9 +97,10 @@ function formatTaskResult(result: TaskResult, deviceId: string): string {
 function formatBatchResults(results: Record<string, TaskResult>): string {
   const lines = ['Batch execution results:'];
   for (const [deviceId, result] of Object.entries(results)) {
-    const status = result.success ? '✅' : '❌';
+    const icon = result.success ? '✅' : result.status === 'aborted' ? '🛑' : '❌';
     const msg = result.message ?? (result.success ? 'Done' : 'Failed');
-    lines.push(`${status} [${deviceId}] ${msg}`);
+    const statusTag = result.status && result.status !== 'completed' ? ` (${result.status})` : '';
+    lines.push(`${icon} [${deviceId}] ${msg}${statusTag}`);
   }
   return lines.join('\n');
 }
