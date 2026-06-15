@@ -16,6 +16,12 @@ import { type Server as HTTPServer } from 'http';
 import { appendFileSync } from 'fs';
 import { join } from 'path';
 
+// Opt-in stdout verbosity. The per-message/per-frame logs flood OpenClaw's
+// stdout (dozens of lines/sec during mirroring), drowning out channel and
+// agent logs during debugging. Default off — set TABBY_VERBOSE=1 to restore.
+// File-based flog() is unaffected so on-disk diagnostics still capture detail.
+const VERBOSE = process.env.TABBY_VERBOSE === '1';
+
 // File-based debug logging to bypass OpenClaw's console.log filtering
 const DEBUG_LOG = join(process.env.HOME ?? '/tmp', 'tabby-control-debug.log');
 function flog(msg: string): void {
@@ -455,11 +461,15 @@ export class WsServer {
     ws.on('message', (data, isBinary) => {
       lastActivity = Date.now();
 
-      // Debug: log every message type for diagnosis
+      // Debug: log every message type for diagnosis. High frequency during
+      // mirroring (per video frame) — keep on stdout only under TABBY_VERBOSE;
+      // flog() still records every message to the on-disk debug log.
       const msgPreview = isBinary
         ? `binary(${(data as Buffer).length}b)`
         : `text(${(data as Buffer).length}b):${(data as Buffer).toString().substring(0, 80)}`;
-      console.log(`[tabby-control] phone msg: device=${deviceId}, ${msgPreview}`);
+      if (VERBOSE) {
+        console.log(`[tabby-control] phone msg: device=${deviceId}, ${msgPreview}`);
+      }
       flog(`PHONE MSG: device=${deviceId}, ${msgPreview}`);
 
       if (isBinary) {
