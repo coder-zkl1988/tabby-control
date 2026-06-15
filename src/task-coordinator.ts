@@ -49,6 +49,8 @@ interface PendingRequest {
   reject: (reason: Error) => void;
   timeout: ReturnType<typeof setTimeout>;
   deviceId: string;
+  /** Re-arm the idle timeout — called on every agent.progress heartbeat. */
+  rearm: () => void;
 }
 
 // ─── ProgressCallback ────────────────────────────────────────────────────────
@@ -408,6 +410,11 @@ export class TaskCoordinator {
     if (message.method === 'agent.progress') {
       const params = message.params as Record<string, unknown>;
 
+      // Heartbeat: any progress means the task is alive — re-arm its idle
+      // timeout so a long-but-active task (browsing, 养号) isn't killed by
+      // waitForResult while the phone is still stepping.
+      this.pending.get(String(params.taskId ?? '') as TaskId)?.rearm();
+
       // Forward interaction_request to Tabby via IPC (VLM needs decision)
       const interactionReq = params.interaction_request as { message: string; screenshot?: string } | undefined;
       if (interactionReq) {
@@ -502,20 +509,30 @@ export class TaskCoordinator {
 
   private waitForResult(taskId: TaskId, deviceId: string, timeoutMs: number): Promise<TaskResult> {
     return new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => {
+      // Idle timeout, not a total wall-clock budget: a phone task can legitimately
+      // run for many minutes (browsing, 养号), and it sends agent.progress every
+      // ~15s. Each progress heartbeat re-arms this timer (see agent.progress
+      // handler), so we only give up when the phone goes silent for timeoutMs.
+      const onTimeout = () => {
         this.pending.delete(taskId);
         this.wsServer.getRegistry().updateStatus(deviceId, {
           status: 'idle',
           currentTaskId: undefined,
         });
-        reject(new Error(`TIMEOUT: task ${taskId} exceeded ${timeoutMs}ms`));
-      }, timeoutMs);
+        reject(new Error(`TIMEOUT: task ${taskId} made no progress for ${timeoutMs}ms`));
+      };
 
       this.pending.set(taskId, {
         resolve,
         reject,
-        timeout,
+        timeout: setTimeout(onTimeout, timeoutMs),
         deviceId,
+        rearm: () => {
+          const entry = this.pending.get(taskId);
+          if (!entry) return;
+          clearTimeout(entry.timeout);
+          entry.timeout = setTimeout(onTimeout, timeoutMs);
+        },
       });
     });
   }
