@@ -76,6 +76,30 @@ export const ExecuteParamsSchema = z.object({
 });
 export type ExecuteParams = z.infer<typeof ExecuteParamsSchema>;
 
+// ─── Media Push (server → phone) ─────────────────────────────────────────────
+// Pushes an image into the device gallery so an autonomous task can later pick
+// it from the album (e.g. publishing a Xiaohongshu post with desktop-uploaded
+// images). Sent on the `task` channel (method `media.push`) to reuse the
+// existing request/response correlation; the phone replies with MediaPushResult.
+
+export const MediaPushParamsSchema = z.object({
+  mediaId: z.string().min(1),
+  filename: z.string().min(1),
+  mimeType: z.string().min(1),
+  /** Base64-encoded image bytes (no data: prefix). */
+  dataBase64: z.string().min(1),
+});
+export type MediaPushParams = z.infer<typeof MediaPushParamsSchema>;
+
+export const MediaPushResultSchema = z.object({
+  mediaId: z.string(),
+  success: z.boolean(),
+  /** Content URI of the saved gallery item when success. */
+  savedUri: z.string().optional(),
+  error: z.string().optional(),
+});
+export type MediaPushResult = z.infer<typeof MediaPushResultSchema>;
+
 // ─── Skill Hint ────────────────────────────────────────────────────────────────
 
 export const SkillHintSchema = z.object({

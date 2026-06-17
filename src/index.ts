@@ -194,6 +194,17 @@ function startHttpServer(
             case 'device_get_status':
               result = coordinator.getDeviceStatus(params.deviceId as string);
               break;
+            case 'device_push_media':
+              result = await coordinator.pushMedia(
+                params.deviceId as string,
+                {
+                  filename: params.filename as string,
+                  mimeType: params.mimeType as string,
+                  dataBase64: params.dataBase64 as string,
+                },
+                (params.timeoutMs as number) ?? 30_000,
+              );
+              break;
             default:
               res.writeHead(400, { 'Content-Type': 'application/json' });
               res.end(JSON.stringify({ error: { code: 'UNKNOWN_METHOD', message: `Unknown method: ${method}` } }));

@@ -135,6 +135,17 @@ async function main() {
               coordinator.cancelTask(params.deviceId as string, params.taskId as string);
               result = { cancelled: true };
               break;
+            case 'device_push_media':
+              result = await coordinator.pushMedia(
+                params.deviceId as string,
+                {
+                  filename: params.filename as string,
+                  mimeType: params.mimeType as string,
+                  dataBase64: params.dataBase64 as string,
+                },
+                (params.timeoutMs as number) ?? 30_000,
+              );
+              break;
             case 'device_execute_skill': {
               const { deviceId, task, steps: rawSteps, handlers: rawHandlers, timeoutMs } = params as {
                 deviceId: string; task: string;

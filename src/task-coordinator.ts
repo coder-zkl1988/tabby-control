@@ -27,6 +27,7 @@ import type {
   ResumeParams,
   TaskStartParams,
   TaskEndParams,
+  MediaPushResult,
 } from './protocol.js';
 import {
   TaskResultSchema,
@@ -35,7 +36,9 @@ import {
   SubTaskResultSchema,
   SubTaskHeartbeatSchema,
   OrchestrationResultSchema,
+  MediaPushResultSchema,
 } from './protocol.js';
+import { randomUUID } from 'crypto';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -80,6 +83,11 @@ export class TaskCoordinator {
     resolve: (value: OrchestrationResult) => void;
     reject: (reason: Error) => void;
     deviceId: string;
+  }>();
+  private mediaPending = new Map<string, {
+    resolve: (value: MediaPushResult) => void;
+    reject: (reason: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
   }>();
   private progressCallbacks: ProgressCallback[] = [];
   private ipcNotifier: (channel: string, data: unknown) => void;
@@ -156,6 +164,35 @@ export class TaskCoordinator {
     }
 
     return this.waitForResult(taskId, deviceId, timeoutMs);
+  }
+
+  /**
+   * Push an image into the device gallery. Resolves with the saved content URI
+   * once the phone confirms. Uses the `task` channel + a media-specific pending
+   * map (id `media_<mediaId>`) so it reuses handleTaskMessage's correlation.
+   */
+  async pushMedia(
+    deviceId: string,
+    media: { filename: string; mimeType: string; dataBase64: string },
+    timeoutMs = 30_000,
+  ): Promise<MediaPushResult> {
+    const mediaId = randomUUID();
+    const sent = this.wsServer.sendToDevice(deviceId, {
+      channel: 'task',
+      id: `media_${mediaId}`,
+      method: 'media.push',
+      params: { mediaId, ...media },
+    });
+    if (!sent) {
+      throw new Error('DEVICE_OFFLINE');
+    }
+    return new Promise<MediaPushResult>((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.mediaPending.delete(mediaId);
+        reject(new Error('TIMEOUT'));
+      }, timeoutMs);
+      this.mediaPending.set(mediaId, { resolve, reject, timeout });
+    });
   }
 
   /**
@@ -360,6 +397,28 @@ export class TaskCoordinator {
     if (method?.startsWith('subtask.')) {
       this.handleSubTaskMessage(deviceId, message);
       return;
+    }
+
+    // ── Media push result ───────────────────────────────────────────────────
+    // id is "resp_media_<mediaId>" (echoed back from our "media_<mediaId>").
+    {
+      const rawId = (message.id as string) || '';
+      const idBody = rawId.startsWith('resp_') ? rawId.slice(5) : rawId;
+      if (idBody.startsWith('media_')) {
+        const mediaId = idBody.slice('media_'.length);
+        const entry = this.mediaPending.get(mediaId);
+        if (entry) {
+          clearTimeout(entry.timeout);
+          this.mediaPending.delete(mediaId);
+          const parsed = MediaPushResultSchema.safeParse(message.result);
+          if (parsed.success) entry.resolve(parsed.data);
+          else
+            entry.reject(
+              new Error(`Invalid media result: ${JSON.stringify(message.result)}`),
+            );
+        }
+        return;
+      }
     }
 
     // ── Result ────────────────────────────────────────────────────────────────
