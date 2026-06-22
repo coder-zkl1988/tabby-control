@@ -259,6 +259,17 @@ export interface MirrorHandler {
 
 // ─── WsServer ────────────────────────────────────────────────────────────────
 
+/**
+ * VLM gateway credential pushed to a phone in the `connected` handshake.
+ * apiUrl is the full OpenAI-compatible base (e.g. the new-api gateway's
+ * `https://<gateway>/v1/`); the phone appends `/chat/completions`.
+ */
+export interface VlmCredential {
+  apiUrl: string;
+  apiKey: string;
+  model: string;
+}
+
 export class WsServer {
   readonly wss: InstanceType<typeof WSServer>;
   readonly mirrorWss: InstanceType<typeof WSServer>;
@@ -268,6 +279,13 @@ export class WsServer {
   private mirrorHandler?: MirrorHandler;
   /** Direct handler for task messages — called synchronously when a phone sends a task response */
   private taskMessageHandler?: (deviceId: string, message: Record<string, unknown>) => void;
+  /**
+   * Supplies the VLM gateway credential to push to a phone on connect, so the
+   * phone runs the model through the desktop user's cloud account (billed to
+   * their balance). Returns null when no user is signed in — the phone then
+   * falls back to its own local VLM settings.
+   */
+  private vlmCredentialProvider?: () => VlmCredential | null;
 
   constructor(
     private port: number,
@@ -297,6 +315,15 @@ export class WsServer {
 
   setTaskMessageHandler(handler: (deviceId: string, message: Record<string, unknown>) => void): void {
     this.taskMessageHandler = handler;
+  }
+
+  /**
+   * Register a provider for the VLM gateway credential pushed to phones on
+   * connect. Called once per device connect; return null to push nothing
+   * (phone keeps its local VLM settings).
+   */
+  setVlmCredentialProvider(provider: () => VlmCredential | null): void {
+    this.vlmCredentialProvider = provider;
   }
 
   /**
@@ -508,7 +535,20 @@ export class WsServer {
           authed = true;
 
           const session = this.registry.register(deviceId, ws, capabilities);
-          ws.send(JSON.stringify({ type: 'connected', serverSessionId: deviceId }));
+          // Push the signed-in user's VLM gateway credential so the phone runs
+          // the model on their cloud account. Absent (no provider / not signed
+          // in) → phone falls back to its local VLM settings.
+          let vlm: VlmCredential | null = null;
+          try {
+            vlm = this.vlmCredentialProvider?.() ?? null;
+          } catch (err) {
+            console.warn(`[tabby-control] vlmCredentialProvider threw: ${String(err)}`);
+          }
+          ws.send(JSON.stringify(
+            vlm
+              ? { type: 'connected', serverSessionId: deviceId, vlm }
+              : { type: 'connected', serverSessionId: deviceId },
+          ));
           this.ipcNotifier('device:connected', session.info);
           void this.notifyController({ type: 'device_connected', deviceId });
           console.log(`[tabby-control] device connected: ${deviceId}`);

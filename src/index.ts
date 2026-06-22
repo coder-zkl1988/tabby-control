@@ -6,7 +6,7 @@
  */
 
 import { createServer, type Server as HTTPServer } from 'http';
-import { WsServer, DeviceRegistry } from './ws-server.js';
+import { WsServer, DeviceRegistry, type VlmCredential } from './ws-server.js';
 import { TaskCoordinator } from './task-coordinator.js';
 import { MqttBroker } from './mqtt-broker.js';
 import { MqttPhoneProxy } from './mqtt-phone-proxy.js';
@@ -129,6 +129,7 @@ function startHttpServer(
   bridge: InProcessBridge,
   _notifier: (channel: string, data: unknown) => void,
   logger: TabbyLogger,
+  setVlmCredential: (cred: VlmCredential | null) => void,
 ): HTTPServer {
   const server = createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -194,6 +195,19 @@ function startHttpServer(
             case 'device_get_status':
               result = coordinator.getDeviceStatus(params.deviceId as string);
               break;
+            case 'device_set_vlm_credential': {
+              // nexu pushes the signed-in user's gateway credential here on
+              // login/logout/refresh; null/missing clears it (phone falls back
+              // to local VLM settings). Applied to phones on their next connect.
+              const cred = params.credential as VlmCredential | null | undefined;
+              if (cred && cred.apiUrl && cred.apiKey && cred.model) {
+                setVlmCredential({ apiUrl: cred.apiUrl, apiKey: cred.apiKey, model: cred.model });
+              } else {
+                setVlmCredential(null);
+              }
+              result = { ok: true };
+              break;
+            }
             case 'device_push_media':
               result = await coordinator.pushMedia(
                 params.deviceId as string,
@@ -269,6 +283,16 @@ export default {
     };
 
     const wsServer = new WsServer(config.wsPort, ipcNotifier);
+
+    // VLM 网关凭证：由 nexu 在登录态变化/启动时通过 RPC(device_set_vlm_credential)
+    // 推送，缓存在此闭包；手机连接时 WsServer 读取并随 connected 下发。
+    // null = 未登录/未推送 → 手机回退本地 VLM 设置。
+    let currentVlmCredential: VlmCredential | null = null;
+    const setVlmCredential = (cred: VlmCredential | null) => {
+      currentVlmCredential = cred;
+      logger.info(`[tabby-control] VLM credential ${cred ? `set (model=${cred.model})` : 'cleared'}`);
+    };
+    wsServer.setVlmCredentialProvider(() => currentVlmCredential);
 
     const mqttRegistry = wsServer.getRegistry();
     const mqttBroker = new MqttBroker(config.mqttPort, mqttRegistry);
@@ -352,7 +376,7 @@ export default {
         new MqttPhoneProxy(mqttBroker, wsServer.getRegistry(), coordinator.handleTaskMessage.bind(coordinator), ipcNotifier);
 
         const inProcess = new InProcessBridge(coordinator, wsServer.getRegistry(), ipcNotifier);
-        startHttpServer(config.rpcPort, coordinator, inProcess, ipcNotifier, logger);
+        startHttpServer(config.rpcPort, coordinator, inProcess, ipcNotifier, logger, setVlmCredential);
         logger.info(`[tabby-control] MQTT on mqtt://0.0.0.0:${config.mqttPort}, WebSocket on ws://0.0.0.0:${config.wsPort}/phone`);
         resolve(inProcess);
       });
