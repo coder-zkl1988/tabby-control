@@ -1,6 +1,6 @@
 {
   "name": "@youngclaw/tabby-control",
-  "version": "2026.3.2",
+  "version": "2026.3.3",
   "description": "Remote Android device control plugin for Tabby. Manages WebSocket connections with Tababy Android app and exposes device control as tools.",
   "type": "module",
   "main": "./dist/index.js",

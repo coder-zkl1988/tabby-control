@@ -6,6 +6,7 @@
  */
 
 import { createServer, type Server as HTTPServer } from 'http';
+import { readFileSync } from 'fs';
 import { WsServer, DeviceRegistry, type VlmCredential } from './ws-server.js';
 import { TaskCoordinator } from './task-coordinator.js';
 import { MqttBroker } from './mqtt-broker.js';
@@ -29,6 +30,41 @@ const DEFAULT_CONFIG = {
   mqttPort: 18883,
   rpcPort: 18801,
 };
+
+// ─── Build provenance ────────────────────────────────────────────────────────
+
+/**
+ * Read the build stamp written by `scripts/build-nexu.mjs` (version + git sha +
+ * build time) so the running plugin announces exactly which build it is on
+ * register. Version alone is ambiguous — the same version can be rebuilt with
+ * different code, which is how a stale plugin shipped undetected. Falls back to
+ * package.json version (plain `npm run build` / dev) when the stamp is absent.
+ */
+function readBuildInfo(): { version: string; gitSha: string; builtAt: string } {
+  try {
+    const raw = readFileSync(new URL('./build-info.json', import.meta.url), 'utf8');
+    const info = JSON.parse(raw) as Partial<{
+      version: string;
+      gitSha: string;
+      builtAt: string;
+    }>;
+    return {
+      version: String(info.version ?? 'unknown'),
+      gitSha: String(info.gitSha ?? 'unknown'),
+      builtAt: String(info.builtAt ?? 'unknown'),
+    };
+  } catch {
+    try {
+      const raw = readFileSync(new URL('../package.json', import.meta.url), 'utf8');
+      const pkg = JSON.parse(raw) as { version?: string };
+      return { version: String(pkg.version ?? 'unknown'), gitSha: 'dev', builtAt: 'dev' };
+    } catch {
+      return { version: 'unknown', gitSha: 'unknown', builtAt: 'unknown' };
+    }
+  }
+}
+
+const BUILD_INFO = readBuildInfo();
 
 // ─── Tabby plugin API types ────────────────────────────────────────────────────
 
@@ -271,6 +307,9 @@ export default {
   register(api: TabbyPluginApi): void {
     const pluginConfig = api.pluginConfig ?? {};
     const logger = api.logger;
+    logger.info(
+      `[tabby-control] v${BUILD_INFO.version} (build ${BUILD_INFO.gitSha}, built ${BUILD_INFO.builtAt})`,
+    );
     logger.info(`[tabby-control] pluginConfig: ${JSON.stringify(pluginConfig)}`);
     const config = {
       wsPort: typeof pluginConfig.wsPort === 'number' ? pluginConfig.wsPort : 18790,

@@ -7,7 +7,7 @@
  * Usage: node scripts/build-nexu.mjs
  *   or:  npm run build:nexu
  */
-import { cp, mkdir, rm } from "node:fs/promises";
+import { cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { execSync } from "node:child_process";
@@ -31,6 +31,34 @@ for (const entry of ["dist", "openclaw.plugin.json", "package.json", "pnpm-lock.
     { recursive: true, dereference: true, force: true }
   );
 }
+
+// Stamp build provenance into the bundle. Version alone is ambiguous — the same
+// version can be rebuilt with different code (which is exactly how a stale plugin
+// shipped). The git sha pins the exact source, and the plugin logs this on
+// register so the running build is identifiable in openclaw.log, and Tabby's
+// packaging guard can refuse to ship a plugin that is missing required features.
+const pkg = JSON.parse(
+  await readFile(path.join(PLUGIN_ROOT, "package.json"), "utf8"),
+);
+let gitSha = "unknown";
+try {
+  gitSha = execSync("git rev-parse --short HEAD", { cwd: PLUGIN_ROOT })
+    .toString()
+    .trim();
+} catch {
+  // Not a git checkout (e.g. tarball build) — leave sha as "unknown".
+}
+const buildInfo = {
+  version: pkg.version,
+  gitSha,
+  builtAt: new Date().toISOString(),
+};
+await writeFile(
+  path.join(OUTPUT_DIR, "dist", "build-info.json"),
+  `${JSON.stringify(buildInfo, null, 2)}\n`,
+  "utf8",
+);
+console.log(`[nexu-build] build-info → ${JSON.stringify(buildInfo)}`);
 
 // Install production-only dependencies in the output directory.
 // Use npm instead of pnpm because pnpm's hoisted linker still does not
