@@ -291,6 +291,14 @@ export default {
     const setVlmCredential = (cred: VlmCredential | null) => {
       currentVlmCredential = cred;
       logger.info(`[tabby-control] VLM credential ${cred ? `set (model=${cred.model})` : 'cleared'}`);
+      // The connect-time handshake only delivers the credential to phones that
+      // connect AFTER this point. Push it to already-connected devices too so a
+      // credential that arrives post-connect (e.g. after a gateway restart)
+      // still reaches them without requiring a reconnect.
+      const pushed = wsServer.broadcastVlmCredential(cred);
+      if (pushed > 0) {
+        logger.info(`[tabby-control] VLM credential pushed to ${pushed} connected device(s)`);
+      }
     };
     wsServer.setVlmCredentialProvider(() => currentVlmCredential);
 

@@ -74,8 +74,23 @@ function formatTaskResult(result: TaskResult, deviceId: string): string {
     sections.push(`🔁 Task stuck (no screen progress detected): ${result.message ?? 'Unknown'}`);
     sections.push(`Retrying with different guidance (e.g. an alternative entry point) may help.`);
     if (result.totalSteps !== undefined) sections.push(`Steps: ${result.totalSteps}`);
+  } else if (result.status === 'error') {
+    // Infrastructure / on-device model failure (e.g. the phone's own VLM call
+    // returned an error: no VLM credential on the device, model 401, gateway
+    // unreachable). Surface the device's reported cause verbatim so the desktop
+    // model relays it instead of guessing.
+    const reason = result.message?.trim()
+      ? result.message.trim()
+      : "The device reported an infrastructure error but gave no detail. This is NOT a desktop login or credential problem — report the device-side failure as-is and suggest checking the phone's VLM/model settings.";
+    sections.push(`❌ Device task errored (on-device infrastructure/model failure): ${reason}`);
+    sections.push(`Relay this device-reported cause to the user. Do NOT invent a credential, login, or permission reason the device did not report.`);
+    if (result.failedAtStep !== undefined) sections.push(`Failed at step ${result.failedAtStep}`);
+    if (result.totalSteps !== undefined) sections.push(`Steps: ${result.totalSteps}`);
   } else {
-    sections.push(`❌ Task failed${result.status ? ` (${result.status})` : ''}: ${result.message ?? 'Unknown error'}`);
+    const reason = result.message?.trim()
+      ? result.message.trim()
+      : 'The device returned a failure with no message. Report the failure as-is; do NOT fabricate a credential, login, or permission cause the device did not report.';
+    sections.push(`❌ Task failed${result.status ? ` (${result.status})` : ''}: ${reason}`);
     if (result.failedAtStep !== undefined) sections.push(`Failed at step ${result.failedAtStep}`);
     if (result.totalSteps !== undefined) sections.push(`Steps: ${result.totalSteps}`);
   }
@@ -222,7 +237,18 @@ export function createExecuteTaskTool(client: DeviceBridge) {
         return { content: [{ type: 'text', text }], isError: !result.success };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
-        return { content: [{ type: 'text', text: `device_execute_task failed: ${msg}` }], isError: true };
+        // msg is a prefixed transport/coordinator code (DEVICE_OFFLINE,
+        // DEVICE_NOT_FOUND, TASK_ALREADY_RUNNING, TIMEOUT, or an invalid-result
+        // reason). Surface it verbatim and forbid inventing a login/credential cause.
+        return {
+          content: [
+            {
+              type: 'text',
+              text: `device_execute_task failed (transport/coordinator error): ${msg}\nReport this exact cause; do NOT substitute a credential or login reason the device did not report.`,
+            },
+          ],
+          isError: true,
+        };
       }
     },
   };

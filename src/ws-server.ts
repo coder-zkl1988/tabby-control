@@ -372,6 +372,28 @@ export class WsServer {
   }
 
   /**
+   * Push a VLM gateway credential change to every currently-connected device,
+   * reusing the same `connected` envelope shape phones already parse at
+   * connect-time (so no phone-side change is needed). The credential is normally
+   * only delivered in the connect handshake; this lets a credential that arrives
+   * AFTER a device is already connected still reach it. Pass null to clear (the
+   * phone falls back to its local VLM settings). Returns the count messaged.
+   */
+  broadcastVlmCredential(vlm: VlmCredential | null): number {
+    let sent = 0;
+    for (const session of this.registry.sessions()) {
+      const ok = this.sendToDevice(
+        session.deviceId,
+        vlm
+          ? { type: 'connected', serverSessionId: session.deviceId, vlm }
+          : { type: 'connected', serverSessionId: session.deviceId },
+      );
+      if (ok) sent++;
+    }
+    return sent;
+  }
+
+  /**
    * Send a binary frame to a device. Returns false if the device is not connected.
    */
   sendBinaryToDevice(deviceId: string, data: Buffer): boolean {
