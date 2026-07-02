@@ -166,6 +166,7 @@ function startHttpServer(
   _notifier: (channel: string, data: unknown) => void,
   logger: TabbyLogger,
   setVlmCredential: (cred: VlmCredential | null) => void,
+  setTelemetryConsent: (consent: boolean) => void,
 ): HTTPServer {
   const server = createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -241,6 +242,19 @@ function startHttpServer(
               } else {
                 setVlmCredential(null);
               }
+              result = { ok: true };
+              break;
+            }
+            case 'device_set_telemetry_consent': {
+              // nexu pushes the desktop "crash reports" consent here on toggle
+              // change/startup; phones cache it locally to gate Sentry reporting.
+              const enabled = params.enabled;
+              if (typeof enabled !== 'boolean') {
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: { code: 'INVALID_PARAMS', message: 'enabled must be a boolean' } }));
+                return;
+              }
+              setTelemetryConsent(enabled);
               result = { ok: true };
               break;
             }
@@ -334,12 +348,27 @@ export default {
       // connect AFTER this point. Push it to already-connected devices too so a
       // credential that arrives post-connect (e.g. after a gateway restart)
       // still reaches them without requiring a reconnect.
-      const pushed = wsServer.broadcastVlmCredential(cred);
+      const pushed = wsServer.broadcastConnectedState();
       if (pushed > 0) {
         logger.info(`[tabby-control] VLM credential pushed to ${pushed} connected device(s)`);
       }
     };
     wsServer.setVlmCredentialProvider(() => currentVlmCredential);
+
+    // 遥测同意态（桌面「崩溃报告」开关）：由 nexu 在开关变化/启动时通过
+    // RPC(device_set_telemetry_consent) 推送，缓存在此闭包；手机连接时随
+    // connected 下发，用于门控手机端 Sentry 上报。null = 未推送 → 不下发
+    // 该字段，手机沿用本地缓存的同意态。
+    let currentTelemetryConsent: boolean | null = null;
+    const setTelemetryConsent = (consent: boolean) => {
+      currentTelemetryConsent = consent;
+      logger.info(`[tabby-control] Telemetry consent ${consent ? 'enabled' : 'disabled'}`);
+      const pushed = wsServer.broadcastConnectedState();
+      if (pushed > 0) {
+        logger.info(`[tabby-control] Telemetry consent pushed to ${pushed} connected device(s)`);
+      }
+    };
+    wsServer.setTelemetryConsentProvider(() => currentTelemetryConsent);
 
     const mqttRegistry = wsServer.getRegistry();
     const mqttBroker = new MqttBroker(config.mqttPort, mqttRegistry);
@@ -423,7 +452,7 @@ export default {
         new MqttPhoneProxy(mqttBroker, wsServer.getRegistry(), coordinator.handleTaskMessage.bind(coordinator), ipcNotifier);
 
         const inProcess = new InProcessBridge(coordinator, wsServer.getRegistry(), ipcNotifier);
-        startHttpServer(config.rpcPort, coordinator, inProcess, ipcNotifier, logger, setVlmCredential);
+        startHttpServer(config.rpcPort, coordinator, inProcess, ipcNotifier, logger, setVlmCredential, setTelemetryConsent);
         logger.info(`[tabby-control] MQTT on mqtt://0.0.0.0:${config.mqttPort}, WebSocket on ws://0.0.0.0:${config.wsPort}/phone`);
         resolve(inProcess);
       });

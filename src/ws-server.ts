@@ -286,6 +286,7 @@ export class WsServer {
    * falls back to its own local VLM settings.
    */
   private vlmCredentialProvider?: () => VlmCredential | null;
+  private telemetryConsentProvider?: () => boolean | null;
 
   constructor(
     private port: number,
@@ -324,6 +325,10 @@ export class WsServer {
    */
   setVlmCredentialProvider(provider: () => VlmCredential | null): void {
     this.vlmCredentialProvider = provider;
+  }
+
+  setTelemetryConsentProvider(provider: () => boolean | null): void {
+    this.telemetryConsentProvider = provider;
   }
 
   /**
@@ -372,25 +377,44 @@ export class WsServer {
   }
 
   /**
-   * Push a VLM gateway credential change to every currently-connected device,
-   * reusing the same `connected` envelope shape phones already parse at
-   * connect-time (so no phone-side change is needed). The credential is normally
-   * only delivered in the connect handshake; this lets a credential that arrives
-   * AFTER a device is already connected still reach it. Pass null to clear (the
-   * phone falls back to its local VLM settings). Returns the count messaged.
+   * Push the full current desktop-owned state (VLM credential + telemetry
+   * consent) to every currently-connected device, reusing the same `connected`
+   * envelope shape phones already parse at connect-time (so no phone-side
+   * change is needed). State is normally only delivered in the connect
+   * handshake; this lets a change that arrives AFTER a device is already
+   * connected still reach it. Phones treat `vlm` as a snapshot (absent =
+   * clear, fall back to local settings) and `telemetryConsent` as incremental
+   * (absent = unchanged), so every broadcast carries BOTH current values to
+   * avoid clobbering one while updating the other. Returns the count messaged.
    */
-  broadcastVlmCredential(vlm: VlmCredential | null): number {
+  broadcastConnectedState(): number {
     let sent = 0;
     for (const session of this.registry.sessions()) {
-      const ok = this.sendToDevice(
-        session.deviceId,
-        vlm
-          ? { type: 'connected', serverSessionId: session.deviceId, vlm }
-          : { type: 'connected', serverSessionId: session.deviceId },
-      );
+      const ok = this.sendToDevice(session.deviceId, this.buildConnectedEnvelope(session.deviceId));
       if (ok) sent++;
     }
     return sent;
+  }
+
+  /**
+   * The `connected` envelope doubles as the desktop-state snapshot delivered
+   * both at handshake and on post-connect broadcasts.
+   */
+  private buildConnectedEnvelope(deviceId: string): Record<string, unknown> {
+    const envelope: Record<string, unknown> = { type: 'connected', serverSessionId: deviceId };
+    try {
+      const vlm = this.vlmCredentialProvider?.() ?? null;
+      if (vlm) envelope.vlm = vlm;
+    } catch (err) {
+      console.warn(`[tabby-control] vlmCredentialProvider threw: ${String(err)}`);
+    }
+    try {
+      const consent = this.telemetryConsentProvider?.() ?? null;
+      if (consent !== null) envelope.telemetryConsent = consent;
+    } catch (err) {
+      console.warn(`[tabby-control] telemetryConsentProvider threw: ${String(err)}`);
+    }
+    return envelope;
   }
 
   /**
@@ -557,20 +581,10 @@ export class WsServer {
           authed = true;
 
           const session = this.registry.register(deviceId, ws, capabilities);
-          // Push the signed-in user's VLM gateway credential so the phone runs
-          // the model on their cloud account. Absent (no provider / not signed
-          // in) → phone falls back to its local VLM settings.
-          let vlm: VlmCredential | null = null;
-          try {
-            vlm = this.vlmCredentialProvider?.() ?? null;
-          } catch (err) {
-            console.warn(`[tabby-control] vlmCredentialProvider threw: ${String(err)}`);
-          }
-          ws.send(JSON.stringify(
-            vlm
-              ? { type: 'connected', serverSessionId: deviceId, vlm }
-              : { type: 'connected', serverSessionId: deviceId },
-          ));
+          // Deliver desktop-owned state: the signed-in user's VLM gateway
+          // credential (absent → phone falls back to local VLM settings) and
+          // the telemetry consent (absent → phone keeps its cached value).
+          ws.send(JSON.stringify(this.buildConnectedEnvelope(deviceId)));
           this.ipcNotifier('device:connected', session.info);
           void this.notifyController({ type: 'device_connected', deviceId });
           console.log(`[tabby-control] device connected: ${deviceId}`);
