@@ -17,6 +17,7 @@ const PLUGIN_ROOT = path.resolve(__dirname, "..");
 const OUTPUT_DIR = path.join(PLUGIN_ROOT, "dist-nexu", "tabby-control");
 
 console.log("[nexu-build] Building plugin...");
+await rm(path.join(PLUGIN_ROOT, "dist"), { recursive: true, force: true });
 execSync("npm run build", { cwd: PLUGIN_ROOT, stdio: "inherit" });
 
 console.log("[nexu-build] Assembling deployable directory...");
@@ -61,10 +62,8 @@ await writeFile(
 console.log(`[nexu-build] build-info → ${JSON.stringify(buildInfo)}`);
 
 // Install production-only dependencies in the output directory.
-// Use npm instead of pnpm because pnpm's hoisted linker still does not
-// install transitive deps that packages require() internally (e.g. aedes
-// requires fastparallel which require()s reusify). npm creates a true
-// flat node_modules where all transitive deps are reachable by Node.js.
+// Use npm so the deployable directory contains a self-contained, flat
+// production dependency tree on every packaging platform.
 console.log("[nexu-build] Installing production dependencies (npm)...");
 execSync("npm install --omit=dev --no-package-lock", {
   cwd: OUTPUT_DIR,

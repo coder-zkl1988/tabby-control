@@ -1,5 +1,5 @@
 import type { TaskCoordinator } from './task-coordinator.js';
-import type { OrchestrationResult, SubTaskExecuteParams, SkillHint, SubTaskStatus } from './protocol.js';
+import type { OrchestrationResult, SubTaskExecuteParams, SkillHint } from './protocol.js';
 import type { SkillStep, Handler } from './skill-types.js';
 
 interface SubTaskPlan {
@@ -162,7 +162,6 @@ export class Orchestrator {
     let retryCount = 0;
     const maxRetries = 1;
     let i = 0;
-    let lastCurrentState = '';
 
     while (i < plans.length) {
       if (Date.now() - startTime > timeoutMs) {
@@ -190,10 +189,6 @@ export class Orchestrator {
         if (result.screenshot) {
           screenshots.push(result.screenshot);
         }
-        if (result.currentState) {
-          lastCurrentState = result.currentState;
-        }
-
         switch (result.status) {
           case 'success':
           case 'needs_confirmation':
@@ -312,7 +307,6 @@ export class Orchestrator {
     let retryCount = 0;
     const maxRetries = 1;
     let i = startIndex;
-    let lastCurrentState = '';
 
     while (i < plans.length) {
       if (Date.now() - startTime > timeoutMs) {
@@ -340,10 +334,6 @@ export class Orchestrator {
         if (result.screenshot) {
           screenshots.push(result.screenshot);
         }
-        if (result.currentState) {
-          lastCurrentState = result.currentState;
-        }
-
         switch (result.status) {
           case 'success':
           case 'needs_confirmation':

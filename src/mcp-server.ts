@@ -22,7 +22,6 @@ import type { DeviceBridge } from './protocol.js';
 
 // ── Redirect console.log to stderr (stdout is MCP protocol) ──
 
-const originalLog = console.log.bind(console);
 console.log = (...args: unknown[]) => process.stderr.write(args.map(a => String(a)).join(' ') + '\n');
 console.error = (...args: unknown[]) => process.stderr.write(args.map(a => String(a)).join(' ') + '\n');
 

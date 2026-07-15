@@ -49,7 +49,7 @@ export interface DeviceSession {
   ws: WebSocket;
   info: DeviceInfo;
   lastSnapshot?: MirrorSnapshot;
-  /** Raw binary frame buffer (MQTT path) — avoids base64 re-encoding for native consumers */
+  /** Latest raw binary keyframe for newly connected WebSocket mirror consumers. */
   lastFrameBuffer?: Buffer;
   /** Tracks the last time we received any message or pong from this device. */
   lastActivityAt: number;
@@ -263,11 +263,14 @@ export interface MirrorHandler {
  * VLM gateway credential pushed to a phone in the `connected` handshake.
  * apiUrl is the full OpenAI-compatible base (e.g. the new-api gateway's
  * `https://<gateway>/v1/`); the phone appends `/chat/completions`.
+ * reasoningEffort is StepFun's `reasoning_effort` tier (low/medium/high),
+ * forwarded as-is so the desktop controls per-step reasoning depth.
  */
 export interface VlmCredential {
   apiUrl: string;
   apiKey: string;
   model: string;
+  reasoningEffort?: string;
 }
 
 export class WsServer {

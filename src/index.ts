@@ -7,10 +7,8 @@
 
 import { createServer, type Server as HTTPServer } from 'http';
 import { readFileSync } from 'fs';
-import { WsServer, DeviceRegistry, type VlmCredential } from './ws-server.js';
+import { WsServer, type VlmCredential } from './ws-server.js';
 import { TaskCoordinator } from './task-coordinator.js';
-import { MqttBroker } from './mqtt-broker.js';
-import { MqttPhoneProxy } from './mqtt-phone-proxy.js';
 import { BridgeClient } from './bridge.js';
 import { Orchestrator } from './orchestrator.js';
 import type { DeviceBridge, TaskResult, SubTaskResult, SubTaskExecuteParams, OrchestrationResult, ResumeParams, TaskStartParams, TaskEndParams } from './protocol.js';
@@ -27,7 +25,6 @@ import {
 // ─── Config ──────────────────────────────────────────────────────────────────
 
 const DEFAULT_CONFIG = {
-  mqttPort: 18883,
   rpcPort: 18801,
 };
 
@@ -238,7 +235,12 @@ function startHttpServer(
               // to local VLM settings). Applied to phones on their next connect.
               const cred = params.credential as VlmCredential | null | undefined;
               if (cred && cred.apiUrl && cred.apiKey && cred.model) {
-                setVlmCredential({ apiUrl: cred.apiUrl, apiKey: cred.apiKey, model: cred.model });
+                setVlmCredential({
+                  apiUrl: cred.apiUrl,
+                  apiKey: cred.apiKey,
+                  model: cred.model,
+                  reasoningEffort: cred.reasoningEffort,
+                });
               } else {
                 setVlmCredential(null);
               }
@@ -327,11 +329,10 @@ export default {
     logger.info(`[tabby-control] pluginConfig: ${JSON.stringify(pluginConfig)}`);
     const config = {
       wsPort: typeof pluginConfig.wsPort === 'number' ? pluginConfig.wsPort : 18790,
-      mqttPort: typeof pluginConfig.mqttPort === 'number' ? pluginConfig.mqttPort : DEFAULT_CONFIG.mqttPort,
       rpcPort: typeof pluginConfig.rpcPort === 'number' ? pluginConfig.rpcPort : DEFAULT_CONFIG.rpcPort,
     };
 
-    const ipcNotifier = (channel: string, data: unknown) => {
+    const ipcNotifier = (channel: string) => {
       logger.debug(`[tabby-control] IPC: ${channel}`);
     };
 
@@ -369,12 +370,6 @@ export default {
       }
     };
     wsServer.setTelemetryConsentProvider(() => currentTelemetryConsent);
-
-    const mqttRegistry = wsServer.getRegistry();
-    const mqttBroker = new MqttBroker(config.mqttPort, mqttRegistry);
-    void mqttBroker.start().then(() => {
-      logger.info(`[tabby-control] MQTT broker on mqtt://0.0.0.0:${config.mqttPort} (tcp+ws)`);
-    });
 
     const httpServer = createServer((req, res) => {
       if (req.url === '/health') {
@@ -448,12 +443,9 @@ export default {
           },
         });
 
-        // MQTT proxy: bridge MQTT messages into coordinator/registry
-        new MqttPhoneProxy(mqttBroker, wsServer.getRegistry(), coordinator.handleTaskMessage.bind(coordinator), ipcNotifier);
-
         const inProcess = new InProcessBridge(coordinator, wsServer.getRegistry(), ipcNotifier);
         startHttpServer(config.rpcPort, coordinator, inProcess, ipcNotifier, logger, setVlmCredential, setTelemetryConsent);
-        logger.info(`[tabby-control] MQTT on mqtt://0.0.0.0:${config.mqttPort}, WebSocket on ws://0.0.0.0:${config.wsPort}/phone`);
+        logger.info(`[tabby-control] WebSocket on ws://0.0.0.0:${config.wsPort}/phone`);
         resolve(inProcess);
       });
       httpServer.once('error', () => {

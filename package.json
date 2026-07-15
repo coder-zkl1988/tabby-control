@@ -27,14 +27,6 @@
     "./bridge": {
       "import": "./dist/bridge.js",
       "types": "./dist/bridge.d.ts"
-    },
-    "./mqtt-broker": {
-      "import": "./dist/mqtt-broker.js",
-      "types": "./dist/mqtt-broker.d.ts"
-    },
-    "./mqtt-phone-proxy": {
-      "import": "./dist/mqtt-phone-proxy.js",
-      "types": "./dist/mqtt-phone-proxy.d.ts"
     }
   },
   "files": [
@@ -64,14 +56,13 @@
   "devDependencies": {
     "@types/node": "^22.0.0",
     "@types/ws": "^8.5.10",
+    "@typescript-eslint/eslint-plugin": "^8.63.0",
+    "@typescript-eslint/parser": "^8.63.0",
     "eslint": "^9.0.0",
     "typescript": "^5.7.0"
   },
   "dependencies": {
-    "aedes": "^0.51.3",
-    "fastparallel": "^2.4.1",
-    "fastseries": "^2.0.0",
-    "ws": "^8.18.0",
+    "ws": "^8.21.0",
     "zod": "^3.23.8"
   }
 }

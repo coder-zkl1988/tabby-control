@@ -10,16 +10,13 @@
  *   → resolves pending Promise → tool returns result
  */
 
-import { fileURLToPath } from 'url';
-import { dirname, join } from 'path';
+import { join } from 'path';
 import { homedir } from 'os';
 import fs from 'fs';
 import type { WsServer } from './ws-server.js';
 import type {
   TaskId,
   DeviceId,
-  ExecuteParams,
-  ExecuteBatchParams,
   TaskResult,
   SubTaskResult,
   SubTaskExecuteParams,
@@ -28,22 +25,40 @@ import type {
   TaskStartParams,
   TaskEndParams,
   MediaPushResult,
+  TaskArtifact,
 } from './protocol.js';
 import {
   TaskResultSchema,
-  TaskIdSchema,
-  SubTaskExecuteParamsSchema,
   SubTaskResultSchema,
-  SubTaskHeartbeatSchema,
   OrchestrationResultSchema,
   MediaPushResultSchema,
+  AgentArtifactParamsSchema,
 } from './protocol.js';
 import { randomUUID } from 'crypto';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = dirname(__filename);
 // Screenshots go under ~/.openclaw/media/ which is whitelisted for Feishu media sending
 const SCREENSHOT_DIR = join(homedir(), '.openclaw', 'media', 'tabby-screenshots');
+const TASK_ARTIFACT_DIR = join(SCREENSHOT_DIR, 'artifacts');
+const MAX_TASK_ARTIFACT_BYTES = 8 * 1024 * 1024;
+const MAX_TASK_ARTIFACTS = 32;
+
+function artifactExtension(mimeType: string): string {
+  if (mimeType === 'image/png') return 'png';
+  if (mimeType === 'image/webp') return 'webp';
+  return 'jpg';
+}
+
+function hasExpectedImageSignature(buffer: Buffer, mimeType: string): boolean {
+  if (mimeType === 'image/jpeg') {
+    return buffer.length >= 3 && buffer[0] === 0xff && buffer[1] === 0xd8 && buffer[2] === 0xff;
+  }
+  if (mimeType === 'image/png') {
+    return buffer.length >= 8 && buffer.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]));
+  }
+  return buffer.length >= 12
+    && buffer.subarray(0, 4).toString('ascii') === 'RIFF'
+    && buffer.subarray(8, 12).toString('ascii') === 'WEBP';
+}
 
 // ─── Pending Request ──────────────────────────────────────────────────────────
 
@@ -82,6 +97,7 @@ export class TaskCoordinator {
   private orchestrationPending = new Map<string, {
     resolve: (value: OrchestrationResult) => void;
     reject: (reason: Error) => void;
+    timeout: ReturnType<typeof setTimeout>;
     deviceId: string;
   }>();
   private mediaPending = new Map<string, {
@@ -89,6 +105,7 @@ export class TaskCoordinator {
     reject: (reason: Error) => void;
     timeout: ReturnType<typeof setTimeout>;
   }>();
+  private taskArtifacts = new Map<TaskId, TaskArtifact[]>();
   private progressCallbacks: ProgressCallback[] = [];
   private ipcNotifier: (channel: string, data: unknown) => void;
   private wsServer: WsServer;
@@ -103,6 +120,7 @@ export class TaskCoordinator {
       fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
       console.log(`[tabby-control] Created screenshot dir: ${SCREENSHOT_DIR}`);
     }
+    fs.mkdirSync(TASK_ARTIFACT_DIR, { recursive: true });
     this.ipcNotifier = ipcNotifier;
   }
 
@@ -328,7 +346,9 @@ export class TaskCoordinator {
     if (pending) {
       clearTimeout(pending.timeout);
       this.pending.delete(taskId as TaskId);
+      pending.reject(new Error('CANCELLED'));
     }
+    this.taskArtifacts.delete(taskId as TaskId);
 
     this.wsServer.getRegistry().updateStatus(deviceId, {
       status: 'idle',
@@ -367,21 +387,33 @@ export class TaskCoordinator {
    * Replace the base64 string with the file path in the result.
    * Phone sends WebP-compressed JPEG data, saved as .webp for correct format.
    */
-  private enrichResultWithScreenshot(taskResult: TaskResult): TaskResult {
-    if (!taskResult.finalScreenshot) return taskResult;
-
-    try {
-      const filePath = join(SCREENSHOT_DIR, `${taskResult.taskId}.webp`);
-      // Decode base64 and write WebP file
-      const buffer = Buffer.from(taskResult.finalScreenshot, 'base64');
-      fs.writeFileSync(filePath, buffer);
-      console.log(`[tabby-control] Screenshot saved: ${filePath} (${buffer.length} bytes)`);
-      // Return result with file path instead of base64
-      return { ...taskResult, finalScreenshot: filePath };
-    } catch (err) {
-      console.warn(`[tabby-control] Failed to save screenshot: ${err}`);
-      return taskResult; // Fallback: return original result with base64
+  private enrichResultWithScreenshot(
+    taskId: TaskId,
+    taskResult: TaskResult,
+    artifacts: TaskArtifact[] = [],
+  ): TaskResult {
+    // Artifact paths are desktop-owned. Never trust paths supplied by a phone in
+    // the task result; only attach files persisted by the artifact handler.
+    let enriched: TaskResult = { ...taskResult, artifacts: undefined };
+    if (taskResult.finalScreenshot) {
+      try {
+        const safeTaskId = taskId.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 128);
+        const filePath = join(SCREENSHOT_DIR, `${safeTaskId}.webp`);
+        const buffer = Buffer.from(taskResult.finalScreenshot, 'base64');
+        fs.writeFileSync(filePath, buffer);
+        console.log(`[tabby-control] Screenshot saved: ${filePath} (${buffer.length} bytes)`);
+        enriched = { ...enriched, finalScreenshot: filePath };
+      } catch (err) {
+        console.warn(`[tabby-control] Failed to save screenshot: ${err}`);
+      }
     }
+    if (artifacts.length > 0) {
+      enriched = {
+        ...enriched,
+        artifacts: [...(enriched.artifacts ?? []), ...artifacts],
+      };
+    }
+    return enriched;
   }
 
   // ─── IPC Handler ────────────────────────────────────────────────────────────
@@ -396,6 +428,81 @@ export class TaskCoordinator {
     const method = message.method as string;
     if (method?.startsWith('subtask.')) {
       this.handleSubTaskMessage(deviceId, message);
+      return;
+    }
+
+    // ── Task artifact ───────────────────────────────────────────────────────
+    if (method === 'agent.artifact') {
+      const parsed = AgentArtifactParamsSchema.safeParse(message.params);
+      if (!parsed.success) {
+        console.warn(`[tabby-control] Invalid task artifact: ${parsed.error.message}`);
+        return;
+      }
+
+      const params = parsed.data;
+      const taskId = params.taskId as TaskId;
+      const pending = this.pending.get(taskId);
+      if (!pending || pending.deviceId !== deviceId) {
+        console.warn(`[tabby-control] Ignoring artifact for inactive task ${taskId}`);
+        return;
+      }
+      if (params.dataBase64.length > Math.ceil(MAX_TASK_ARTIFACT_BYTES * 4 / 3) + 8) {
+        console.warn(`[tabby-control] Artifact ${params.artifactId} exceeds size limit`);
+        return;
+      }
+
+      const current = this.taskArtifacts.get(taskId) ?? [];
+      if (current.some(item => item.artifactId === params.artifactId)) {
+        pending.rearm();
+        return;
+      }
+      if (current.length >= MAX_TASK_ARTIFACTS) {
+        console.warn(`[tabby-control] Artifact count limit reached for ${taskId}`);
+        return;
+      }
+
+      try {
+        const buffer = Buffer.from(params.dataBase64, 'base64');
+        if (buffer.length === 0 || buffer.length > MAX_TASK_ARTIFACT_BYTES) {
+          throw new Error(`invalid artifact size ${buffer.length}`);
+        }
+        if (!hasExpectedImageSignature(buffer, params.mimeType)) {
+          throw new Error(`artifact bytes do not match ${params.mimeType}`);
+        }
+        const name = params.name.trim().slice(0, 256);
+        if (!name) throw new Error('artifact name is blank');
+        const safeTaskId = taskId.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 128);
+        const safeId = params.artifactId.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 96) || 'artifact';
+        const taskArtifactDir = join(TASK_ARTIFACT_DIR, safeTaskId);
+        fs.mkdirSync(taskArtifactDir, { recursive: true });
+        const filePath = join(
+          taskArtifactDir,
+          `${safeId}.${artifactExtension(params.mimeType)}`,
+        );
+        fs.writeFileSync(filePath, buffer);
+        const artifact: TaskArtifact = {
+          artifactId: params.artifactId,
+          name,
+          mimeType: params.mimeType,
+          path: filePath,
+        };
+        const updatedArtifacts = [...current, artifact];
+        fs.writeFileSync(
+          join(taskArtifactDir, 'manifest.json'),
+          JSON.stringify({
+            taskId,
+            deviceId,
+            updatedAt: new Date().toISOString(),
+            artifacts: updatedArtifacts,
+          }, null, 2),
+        );
+        this.taskArtifacts.set(taskId, updatedArtifacts);
+        pending.rearm();
+        this.ipcNotifier('device:task_artifact', { deviceId, taskId, artifact });
+        console.log(`[tabby-control] Task artifact saved: ${filePath} (${buffer.length} bytes)`);
+      } catch (err) {
+        console.warn(`[tabby-control] Failed to save task artifact: ${err}`);
+      }
       return;
     }
 
@@ -434,15 +541,29 @@ export class TaskCoordinator {
       const pending = this.pending.get(taskId as TaskId);
       console.log(`[tabby-control] pending.get(${taskId}) = ${pending ? 'FOUND' : 'NOT FOUND'}`);
 
+      if (pending && pending.deviceId !== deviceId) {
+        console.warn(`[tabby-control] Ignoring task result from wrong device for ${taskId}`);
+        return;
+      }
+
       const parsed = TaskResultSchema.safeParse(result);
+      const validResult = parsed.success && parsed.data.taskId === taskId
+        ? parsed.data
+        : null;
+      if (parsed.success && !validResult) {
+        console.warn(`[tabby-control] Task result id mismatch: envelope=${taskId}, result=${parsed.data.taskId}`);
+      }
+      const artifacts = this.taskArtifacts.get(taskId as TaskId) ?? [];
+      this.taskArtifacts.delete(taskId as TaskId);
+      const enriched = validResult
+        ? this.enrichResultWithScreenshot(taskId as TaskId, validResult, artifacts)
+        : result;
       if (pending) {
         clearTimeout(pending.timeout);
         this.pending.delete(taskId as TaskId);
 
-        if (parsed.success) {
-          // Replace base64 screenshot with file path
-          const enriched = this.enrichResultWithScreenshot(parsed.data);
-          pending.resolve(enriched);
+        if (validResult) {
+          pending.resolve(enriched as TaskResult);
         } else {
           pending.reject(new Error(`Invalid result from device: ${JSON.stringify(result)}`));
         }
@@ -461,7 +582,7 @@ export class TaskCoordinator {
         status: 'idle',
         taskId: undefined,
       });
-      this.ipcNotifier('device:task_result', { deviceId, result: parsed.success ? parsed.data : result });
+      this.ipcNotifier('device:task_result', { deviceId, result: enriched });
       return;
     }
 
@@ -574,6 +695,7 @@ export class TaskCoordinator {
       // handler), so we only give up when the phone goes silent for timeoutMs.
       const onTimeout = () => {
         this.pending.delete(taskId);
+        this.taskArtifacts.delete(taskId);
         this.wsServer.getRegistry().updateStatus(deviceId, {
           status: 'idle',
           currentTaskId: undefined,
@@ -614,7 +736,7 @@ export class TaskCoordinator {
         reject(new Error(`ORCHESTRATION_RESUME_TIMEOUT: ${taskId} after ${timeoutMs}ms`));
       }, timeoutMs);
 
-      this.orchestrationPending.set(taskId, { resolve, reject, deviceId });
+      this.orchestrationPending.set(taskId, { resolve, reject, timeout, deviceId });
     });
   }
 
@@ -643,6 +765,7 @@ export class TaskCoordinator {
       const taskId = raw.taskId as string;
       const pending = this.orchestrationPending.get(taskId);
       if (pending) {
+        clearTimeout(pending.timeout);
         this.orchestrationPending.delete(taskId);
         try {
           const result = OrchestrationResultSchema.parse(raw);

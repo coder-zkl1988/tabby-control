@@ -64,6 +64,10 @@ function formatTaskResult(result: TaskResult, deviceId: string): string {
         sections.push(`${s.step}. [${s.success ? '✅' : '❌'}] ${s.action}${s.target ? ` → ${s.target}` : ''}`);
       }
     }
+  } else if (result.status === 'blocked') {
+    sections.push(`🔒 Device requires user action: ${result.message ?? 'unlock or confirm on the phone, then retry'}`);
+    sections.push(`The device agent did not start the task. Resolve the condition on the phone before retrying.`);
+    if (result.totalSteps !== undefined) sections.push(`Steps: ${result.totalSteps}`);
   } else if (result.status === 'aborted') {
     // The phone-side model deliberately gave up (task judged impossible) —
     // not an infrastructure error, so a verbatim retry will abort again.
@@ -106,13 +110,20 @@ function formatTaskResult(result: TaskResult, deviceId: string): string {
     }
   }
 
+  if (result.artifacts?.length) {
+    sections.push(`\nTask artifacts (${result.artifacts.length}):`);
+    for (const artifact of result.artifacts) {
+      sections.push(`- ${artifact.name}: ${artifact.path} (${artifact.mimeType})`);
+    }
+  }
+
   return sections.join('\n');
 }
 
 function formatBatchResults(results: Record<string, TaskResult>): string {
   const lines = ['Batch execution results:'];
   for (const [deviceId, result] of Object.entries(results)) {
-    const icon = result.success ? '✅' : result.status === 'aborted' ? '🛑' : '❌';
+    const icon = result.success ? '✅' : result.status === 'blocked' ? '🔒' : result.status === 'aborted' ? '🛑' : '❌';
     const msg = result.message ?? (result.success ? 'Done' : 'Failed');
     const statusTag = result.status && result.status !== 'completed' ? ` (${result.status})` : '';
     lines.push(`${icon} [${deviceId}] ${msg}${statusTag}`);
@@ -407,7 +418,7 @@ export function createCancelTaskTool(client: DeviceBridge) {
   };
 }
 
-export function createExecuteSkillTool(orchestrator: Orchestrator, registry: DeviceRegistry) {
+export function createExecuteSkillTool(orchestrator: Orchestrator, _registry: DeviceRegistry) {
   return {
     name: 'device_execute_skill',
     label: 'Execute Task with Skill Orchestration',

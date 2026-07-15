@@ -221,6 +221,23 @@ export const AgentProgressParamsSchema = z.object({
 });
 export type AgentProgressParams = z.infer<typeof AgentProgressParamsSchema>;
 
+export const AgentArtifactParamsSchema = z.object({
+  taskId: TaskIdSchema,
+  artifactId: z.string().min(1).max(128),
+  name: z.string().min(1).max(256),
+  mimeType: z.enum(['image/jpeg', 'image/png', 'image/webp']),
+  dataBase64: z.string().min(1),
+});
+export type AgentArtifactParams = z.infer<typeof AgentArtifactParamsSchema>;
+
+export const TaskArtifactSchema = z.object({
+  artifactId: z.string().min(1),
+  name: z.string().min(1),
+  mimeType: z.string().min(1),
+  path: z.string().min(1),
+});
+export type TaskArtifact = z.infer<typeof TaskArtifactSchema>;
+
 // ─── Step Record ──────────────────────────────────────────────────────────────
 
 export const StepRecordSchema = z.object({
@@ -253,6 +270,7 @@ export const TaskResultSchema = z.object({
   needsInteraction: z.boolean().optional(),
   interactionMessage: z.string().optional(),
   interactionScreenshot: z.string().optional(), // file path
+  artifacts: z.array(TaskArtifactSchema).optional(),
 });
 export type TaskResult = z.infer<typeof TaskResultSchema>;
 
@@ -307,7 +325,7 @@ export type MirrorKeyParams = z.infer<typeof MirrorKeyParamsSchema>;
 
 // ─── Unified Message ─────────────────────────────────────────────────────────
 
-const RpcRequestSchema = z.object({
+export const RpcRequestSchema = z.object({
   channel: ChannelSchema,
   id: z.string().optional(),
   method: z.string().optional(),
@@ -315,7 +333,7 @@ const RpcRequestSchema = z.object({
 });
 export type RpcRequest = z.infer<typeof RpcRequestSchema>;
 
-const RpcResponseSchema = z.object({
+export const RpcResponseSchema = z.object({
   channel: ChannelSchema,
   id: z.string().optional(),
   result: z.unknown(),
@@ -387,52 +405,9 @@ export interface DeviceBridge {
   sendTaskEnd(deviceId: string, params: TaskEndParams): Promise<void>;
 }
 
-// ─── MQTT Topics ──────────────────────────────────────────────────────────────
-
-export const MQTT_TOPIC_PREFIX = 'phone';
-
-export function mqttTopic(deviceId: string, suffix: string): string {
-  return `${MQTT_TOPIC_PREFIX}/${deviceId}/${suffix}`;
-}
-
-export const MQTT_SUFFIXES = {
-  HELLO: 'hello',
-  TASK: 'task',
-  CANCEL: 'cancel',
-  STATUS: 'status',
-  FRAME: 'frame',
-  PROGRESS: 'progress',
-  RESULT: 'result',
-  LOG: 'log',
-  MIRROR_CMD: 'mirror_cmd',
-} as const;
-
-// ─── MQTT Frame (binary+JSON header) ─────────────────────────────────────────
-
-export const FrameHeaderSchema = z.object({
-  seq: z.number().int().nonnegative(),
-  ts: z.number().int().positive(),
-  w: z.number().int().positive(),
-  h: z.number().int().positive(),
-  app: z.string().optional(),
-  status: z.enum(['idle', 'busy', 'error']).default('idle'),
-  fmt: z.enum(['jpeg', 'webp']).default('jpeg'),
-  len: z.number().int().positive(),
-});
-export type FrameHeader = z.infer<typeof FrameHeaderSchema>;
-
-/** Separator between JSON header and binary data in MQTT frame messages */
-export const FRAME_HEADER_SEPARATOR = '\n';
-
-// ─── MQTT Config ─────────────────────────────────────────────────────────────
-
-export const MqttConfigSchema = z.object({
-  mqttPort: z.number().int().min(1024).max(65535).default(18883),
-});
-
 export const PluginConfigSchema = z.object({
   wsPort: z.number().int().min(1024).max(65535).default(18790),
   authTokenLifetime: z.number().int().positive().default(86400),
   maxDevices: z.number().int().positive().default(3),
-}).merge(MqttConfigSchema);
+});
 export type PluginConfig = z.infer<typeof PluginConfigSchema>;
