@@ -13,7 +13,7 @@
 
 import WebSocket, { WebSocketServer as WSServer } from 'ws';
 import { type Server as HTTPServer } from 'http';
-import { appendFileSync } from 'fs';
+import { appendFileSync, renameSync, rmSync, statSync } from 'fs';
 import { join } from 'path';
 
 // Opt-in stdout verbosity. The per-message/per-frame logs flood OpenClaw's
@@ -24,10 +24,30 @@ const VERBOSE = process.env.TABBY_VERBOSE === '1';
 
 // File-based debug logging to bypass OpenClaw's console.log filtering
 const DEBUG_LOG = join(process.env.HOME ?? '/tmp', 'tabby-control-debug.log');
+
+// flog() is append-only and fires per message/frame, so without a cap the
+// debug log grows unbounded (observed multi-GB). Rotate at the size limit,
+// keeping a single .1 backup. The size check runs every ROTATE_CHECK_INTERVAL
+// calls to avoid a stat() syscall on every frame during mirroring.
+const DEBUG_LOG_MAX_BYTES = 20 * 1024 * 1024;
+const ROTATE_CHECK_INTERVAL = 500;
+let flogCallCount = 0;
+
+function rotateDebugLogIfOversized(): void {
+  try {
+    if (statSync(DEBUG_LOG).size < DEBUG_LOG_MAX_BYTES) return;
+    rmSync(`${DEBUG_LOG}.1`, { force: true });
+    renameSync(DEBUG_LOG, `${DEBUG_LOG}.1`);
+  } catch { /* ignore */ }
+}
+
 function flog(msg: string): void {
   const ts = new Date().toISOString();
   const line = `[${ts}] ${msg}\n`;
-  try { appendFileSync(DEBUG_LOG, line); } catch { /* ignore */ }
+  try {
+    if (flogCallCount++ % ROTATE_CHECK_INTERVAL === 0) rotateDebugLogIfOversized();
+    appendFileSync(DEBUG_LOG, line);
+  } catch { /* ignore */ }
 }
 import type {
   DeviceInfo,
@@ -779,9 +799,19 @@ export class WsServer {
           console.log(`[tabby-control] mirror subscriber connected for device: ${targetDeviceId}`);
           flog(`MIRROR SUB: device=${targetDeviceId}, forwarders=${this.registry.getMirrorForwarders(targetDeviceId).size}`);
 
-          const fps = typeof (msg as Record<string, unknown>).fps === 'number' ? (msg as Record<string, unknown>).fps as number : 5;
-          this.sendToDevice(targetDeviceId, { channel: 'mirror', type: 'start', deviceId: targetDeviceId, fps });
-          console.log(`[tabby-control] sent mirror start to device: ${targetDeviceId} (fps=${fps})`);
+          // Only a subscriber that states a numeric fps wants the phone to
+          // (re)start the mirror stream (thumbnail fps=3, live view fps=30).
+          // Attach-only subscribers — nexu's control/audio bridges send a bare
+          // {deviceId} — just want forwarded traffic; a default-fps start here
+          // would spam the phone with bogus restarts and race the fps the real
+          // viewer asked for.
+          const fps = typeof (msg as Record<string, unknown>).fps === 'number' ? (msg as Record<string, unknown>).fps as number : null;
+          if (fps !== null) {
+            this.sendToDevice(targetDeviceId, { channel: 'mirror', type: 'start', deviceId: targetDeviceId, fps });
+            console.log(`[tabby-control] sent mirror start to device: ${targetDeviceId} (fps=${fps})`);
+          } else {
+            flog(`MIRROR SUB ATTACH-ONLY (no fps): device=${targetDeviceId}`);
+          }
 
           const lastSnapshot = this.registry.get(targetDeviceId)?.lastSnapshot;
           if (lastSnapshot && ws.readyState === WebSocket.OPEN) {
