@@ -18,7 +18,7 @@ import { createServer } from 'http';
 import { WsServer } from './ws-server.js';
 import { TaskCoordinator } from './task-coordinator.js';
 import { Orchestrator } from './orchestrator.js';
-import type { DeviceBridge } from './protocol.js';
+import type { DeviceBridge, TaskPolicy } from './protocol.js';
 
 // ── Redirect console.log to stderr (stdout is MCP protocol) ──
 
@@ -144,9 +144,35 @@ class McpServer {
                   properties: {
                     deviceId: { type: "string", description: "Device ID from device_list" },
                     task: { type: "string", description: "Natural language task (e.g. '打开微信给张三发消息：今晚吃饭吗')" },
-                    timeoutMs: { type: "number", description: "Timeout in milliseconds", default: 300000 },
+                    timeoutMs: { type: "number", description: "Inactivity timeout in milliseconds — how long to wait with NO progress from the device before giving up. NOT a total runtime budget: a task that keeps reporting progress runs as long as it needs.", default: 300000 },
+                    taskPolicy: {
+                      type: "object",
+                      description: "Optional structured policy that can only narrow phone-side permissions.",
+                      properties: {
+                        operationClass: { type: "string" },
+                        targetPackages: { type: "array", items: { type: "string" } },
+                        allowedAppRoles: { type: "array", items: { type: "string" } },
+                        installSourcePolicy: { type: "string", enum: ["official_store_only"] },
+                        allowBrowserDownload: { type: "boolean" },
+                        allowedActions: { type: "array", items: { type: "string" } },
+                        allowedApps: { type: "array", items: { type: "string" } },
+                      },
+                    },
                   },
                   required: ["deviceId", "task"],
+                },
+              },
+              {
+                name: "device_get_task_results",
+                description: "Fetch results of tasks that already finished on a device. Use this when an execute call returned an error but the device may still have done the work (cancelled, timed out, or lost connection) — the phone keeps working after the caller goes away and its result is retained here. Check this before re-running a task and repeating the work.",
+                inputSchema: {
+                  type: "object",
+                  properties: {
+                    taskId: { type: "string", description: "Exact task ID to look up" },
+                    deviceId: { type: "string", description: "Only results from this device" },
+                    limit: { type: "number", description: "Max results when listing", default: 10 },
+                  },
+                  required: [],
                 },
               },
               {
@@ -209,6 +235,12 @@ class McpServer {
                 args.deviceId as string,
                 args.task as string,
                 (args.timeoutMs as number) ?? 300_000,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                undefined,
+                args.taskPolicy as TaskPolicy | undefined,
               );
               const text = result.success
                 ? `✅ Task completed: ${result.message ?? ''}\nSteps: ${result.totalSteps ?? 0}\nDuration: ${result.duration ? (result.duration / 1000).toFixed(1) + 's' : 'N/A'}`
@@ -216,6 +248,17 @@ class McpServer {
               this.send(id, {
                 content: [{ type: "text", text }],
                 isError: !result.success,
+              });
+              break;
+            }
+            case 'device_get_task_results': {
+              const entries = await this.bridge.getTaskResults({
+                taskId: args.taskId as string | undefined,
+                deviceId: args.deviceId as string | undefined,
+                limit: args.limit as number | undefined,
+              });
+              this.send(id, {
+                content: [{ type: "text", text: JSON.stringify(entries, null, 2) }],
               });
               break;
             }
@@ -342,10 +385,17 @@ async function main() {
     ping: async () => true,
     listDevices: () => Promise.resolve(wsServer.getRegistry().list()),
     getStatus: (deviceId) => Promise.resolve(coordinator.getDeviceStatus(deviceId)),
-    executeTask: (deviceId, task, timeoutMs, guidance, sessionId, maxSteps, allowedActions, allowedApps) =>
-      coordinator.executeTask(deviceId, task, timeoutMs, guidance, sessionId, maxSteps, allowedActions, allowedApps),
+    executeTask: (deviceId, task, timeoutMs, guidance, sessionId, maxSteps, allowedActions, allowedApps, taskPolicy) =>
+      coordinator.executeTask(deviceId, task, timeoutMs, guidance, sessionId, maxSteps, allowedActions, allowedApps, taskPolicy),
     executeTaskAll: (task, timeoutMs) => coordinator.executeTaskAll(task, timeoutMs).then(m => Object.fromEntries(m)),
     executeBatch: (tasks, timeoutMs) => coordinator.executeBatch(tasks, timeoutMs).then(m => Object.fromEntries(m)),
+    getTaskResults: async (query) => {
+      if (query.taskId) {
+        const entry = coordinator.getTaskResult(query.taskId);
+        return entry ? [entry] : [];
+      }
+      return coordinator.getRecentTaskResults(query.deviceId, query.limit);
+    },
     cancelTask: async (deviceId, taskId) => { coordinator.cancelTask(deviceId, taskId); },
     executeSubTask: (deviceId, params, timeoutMs) => coordinator.executeSubTask(deviceId, params, timeoutMs),
     resumeOrchestration: (deviceId, params) => coordinator.resumeOrchestration(deviceId, params),

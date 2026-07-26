@@ -1,0 +1,19 @@
+{
+  "id": "android-text-input-v1",
+  "kind": "system",
+  "targetPackages": [],
+  "name": "Android 文字输入",
+  "version": 1,
+  "priority": 82,
+  "author": "system",
+  "activation": {
+    "intents": ["text.input", "content.search", "content.publish", "message.reply"],
+    "taskKeywords": ["输入", "填写", "搜索", "评论", "回复", "发布", "标题", "正文"],
+    "packages": [],
+    "manufacturers": ["*"],
+    "androidApiMin": 26,
+    "taskScoped": true,
+    "surfaceScoped": false
+  },
+  "capabilities": ["text.input"]
+}

@@ -1,6 +1,6 @@
 {
   "name": "@youngclaw/tabby-control",
-  "version": "2026.3.3",
+  "version": "2026.3.4",
   "description": "Remote Android device control plugin for Tabby. Manages WebSocket connections with Tababy Android app and exposes device control as tools.",
   "type": "module",
   "main": "./dist/index.js",
@@ -31,6 +31,7 @@
   },
   "files": [
     "dist",
+    "generated",
     "openclaw.plugin.json"
   ],
   "openclaw": {
@@ -39,9 +40,15 @@
     ]
   },
   "scripts": {
+    "phone-skills:build": "node scripts/build-phone-skills.mjs",
+    "phone-skills:check": "node scripts/build-phone-skills.mjs --check",
+    "release-gate:device": "node scripts/run-device-release-gate.mjs",
+    "prebuild": "npm run phone-skills:build",
     "build": "tsc --project tsconfig.build.json",
     "build:watch": "tsc --project tsconfig.build.json --watch",
     "build:nexu": "node scripts/build-nexu.mjs",
+    "pretest": "npm run build",
+    "test": "node --test tests/*.test.mjs",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --max-warnings 0"
   },

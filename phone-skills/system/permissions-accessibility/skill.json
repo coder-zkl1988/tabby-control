@@ -1,0 +1,19 @@
+{
+  "id": "android-permissions-accessibility-v1",
+  "kind": "system",
+  "targetPackages": [],
+  "name": "Android 权限与无障碍",
+  "version": 1,
+  "priority": 85,
+  "author": "system",
+  "activation": {
+    "intents": ["permission.manage", "accessibility.enable", "battery.background"],
+    "taskKeywords": ["权限", "无障碍", "辅助功能", "后台运行", "省电", "电池限制", "自启动"],
+    "packages": ["com.android.settings", "com.miui.securitycenter", "role:system_settings"],
+    "manufacturers": ["*"],
+    "androidApiMin": 26,
+    "taskScoped": true,
+    "surfaceScoped": true
+  },
+  "capabilities": ["permission.runtime", "accessibility.manage", "battery.background"]
+}

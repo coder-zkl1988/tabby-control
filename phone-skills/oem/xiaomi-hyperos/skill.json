@@ -1,0 +1,19 @@
+{
+  "id": "xiaomi-hyperos-v1",
+  "kind": "oem",
+  "targetPackages": [],
+  "name": "Xiaomi HyperOS",
+  "version": 2,
+  "priority": 70,
+  "author": "system",
+  "activation": {
+    "intents": [],
+    "taskKeywords": [],
+    "packages": ["com.xiaomi.market", "com.miui.securitycenter", "com.miui.packageinstaller"],
+    "manufacturers": ["XIAOMI", "REDMI", "POCO"],
+    "androidApiMin": 29,
+    "taskScoped": true,
+    "surfaceScoped": true
+  },
+  "capabilities": ["oem.xiaomi.hyperos"]
+}

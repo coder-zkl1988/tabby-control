@@ -1,0 +1,56 @@
+{
+  "$schema": "./schema/manifest.schema.json",
+  "schemaVersion": 2,
+  "bundleVersion": 13,
+  "minAppVersion": "1.0.15",
+  "skills": [
+    {
+      "id": "android-core-v1",
+      "dir": "system/android-core"
+    },
+    {
+      "id": "android-app-install-v1",
+      "dir": "system/app-install"
+    },
+    {
+      "id": "android-permissions-accessibility-v1",
+      "dir": "system/permissions-accessibility"
+    },
+    {
+      "id": "android-text-input-v1",
+      "dir": "system/text-input"
+    },
+    {
+      "id": "android-media-picker-v1",
+      "dir": "system/media-picker"
+    },
+    {
+      "id": "android-system-dialogs-v1",
+      "dir": "system/system-dialogs"
+    },
+    {
+      "id": "android-sms-verification-v1",
+      "dir": "system/sms-verification"
+    },
+    {
+      "id": "xiaomi-hyperos-v1",
+      "dir": "oem/xiaomi-hyperos"
+    },
+    {
+      "id": "xhs-v1",
+      "dir": "apps/xhs"
+    },
+    {
+      "id": "douyin-v1",
+      "dir": "apps/douyin"
+    },
+    {
+      "id": "weixin-v1",
+      "dir": "apps/weixin"
+    },
+    {
+      "id": "amap-v1",
+      "dir": "apps/amap"
+    }
+  ]
+}

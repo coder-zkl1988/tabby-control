@@ -24,8 +24,8 @@ console.log("[nexu-build] Assembling deployable directory...");
 await rm(OUTPUT_DIR, { recursive: true, force: true });
 await mkdir(OUTPUT_DIR, { recursive: true });
 
-// Copy dist output, manifests, and lockfile
-for (const entry of ["dist", "openclaw.plugin.json", "package.json", "pnpm-lock.yaml"]) {
+// Copy dist output, phone skill bundle, manifests, and lockfile
+for (const entry of ["dist", "generated", "openclaw.plugin.json", "package.json", "pnpm-lock.yaml"]) {
   await cp(
     path.join(PLUGIN_ROOT, entry),
     path.join(OUTPUT_DIR, entry),
@@ -46,6 +46,10 @@ try {
   gitSha = execSync("git rev-parse --short HEAD", { cwd: PLUGIN_ROOT })
     .toString()
     .trim();
+  const dirty = execSync("git status --porcelain", { cwd: PLUGIN_ROOT })
+    .toString()
+    .trim();
+  if (dirty) gitSha = `${gitSha}-dirty`;
 } catch {
   // Not a git checkout (e.g. tarball build) — leave sha as "unknown".
 }

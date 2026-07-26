@@ -1,0 +1,19 @@
+{
+  "id": "android-core-v1",
+  "kind": "system",
+  "targetPackages": [],
+  "name": "Android 核心操作",
+  "version": 2,
+  "priority": 100,
+  "author": "system",
+  "activation": {
+    "intents": [],
+    "taskKeywords": [],
+    "packages": [],
+    "manufacturers": ["*"],
+    "androidApiMin": 26,
+    "taskScoped": true,
+    "surfaceScoped": false
+  },
+  "capabilities": ["android.navigation", "android.recovery"]
+}

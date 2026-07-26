@@ -1,0 +1,60 @@
+{
+  "name": "xhs-home-enforce-smoke",
+  "kind": "task",
+  "iterations": 1,
+  "sampleIntervalMs": 200,
+  "forbiddenAppPrefixes": [
+    "com.android.chrome",
+    "com.mi.browser",
+    "com.tencent.mtt",
+    "com.UCMobile",
+    "org.mozilla.firefox",
+    "com.microsoft.emmx"
+  ],
+  "expectedDevice": {
+    "skillSchemaVersion": 2,
+    "skillBundleVersion": 13,
+    "skillDigest": "4139c0177ecc13ea5a570e31a97af737ac653ad67cce7a717418d53d5143fdc2",
+    "skillSyncStatus": "current"
+  },
+  "expectedRuntime": {
+    "deviceSkillLayerMode": "enabled",
+    "devicePolicyMode": "enforce"
+  },
+  "adb": {
+    "path": "/Users/zongkelong/Library/Android/sdk/platform-tools/adb",
+    "serialByDeviceId": {
+      "24094RAD4C-ea308f9d9d3467d4": "8TK7LVORDMU8PJEM",
+      "24094RAD4C-5bb6baafaa89f40d": "MVXK9T59J7BY7TL7"
+    },
+    "preTaskLaunchPackage": "com.lobster.agent",
+    "preTaskSettleMs": 500,
+    "assertions": {
+      "foregroundPackage": "com.xingin.xhs",
+      "uiTextEquals": ["首页", "发现"]
+    }
+  },
+  "task": {
+    "task": "打开小红书，只确认已经进入首页。不要打开帖子，不要点赞、收藏、评论、关注或发布内容，确认后立即结束任务。",
+    "timeoutMs": 120000,
+    "maxSteps": 5,
+    "allowedActions": ["AWAKE", "CLICK", "WAIT", "COMPLETE", "ABORT"],
+    "allowedApps": ["com.xingin.xhs"],
+    "taskPolicy": {
+      "operationClass": "content.browse",
+      "targetPackages": ["com.xingin.xhs"],
+      "allowedAppRoles": ["target_app", "system_dialog", "system_settings"],
+      "allowedActions": ["AWAKE", "CLICK", "WAIT", "COMPLETE", "ABORT"],
+      "allowedApps": ["com.xingin.xhs"],
+      "confirmationPolicy": {
+        "publish": "forbidden",
+        "payment": "forbidden"
+      }
+    }
+  },
+  "thresholds": {
+    "minSuccessRate": 1,
+    "maxIdleP95Ms": 3000,
+    "maxIdleMs": 5000
+  }
+}

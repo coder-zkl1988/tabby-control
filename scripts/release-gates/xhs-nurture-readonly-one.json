@@ -1,0 +1,59 @@
+{
+  "name": "xhs-nurture-readonly-one",
+  "kind": "task",
+  "iterations": 1,
+  "sampleIntervalMs": 200,
+  "forbiddenAppPrefixes": [
+    "com.android.chrome",
+    "com.mi.browser",
+    "com.tencent.mtt",
+    "com.UCMobile",
+    "org.mozilla.firefox",
+    "com.microsoft.emmx"
+  ],
+  "expectedDevice": {
+    "skillSchemaVersion": 2,
+    "skillBundleVersion": 13,
+    "skillDigest": "4139c0177ecc13ea5a570e31a97af737ac653ad67cce7a717418d53d5143fdc2",
+    "skillSyncStatus": "current"
+  },
+  "expectedRuntime": {
+    "deviceSkillLayerMode": "enabled",
+    "devicePolicyMode": "enforce"
+  },
+  "adb": {
+    "path": "/Users/zongkelong/Library/Android/sdk/platform-tools/adb",
+    "serialByDeviceId": {
+      "24094RAD4C-ea308f9d9d3467d4": "8TK7LVORDMU8PJEM",
+      "24094RAD4C-5bb6baafaa89f40d": "MVXK9T59J7BY7TL7"
+    },
+    "preTaskLaunchPackage": "com.lobster.agent",
+    "preTaskSettleMs": 500,
+    "assertions": {
+      "foregroundPackage": "com.xingin.xhs"
+    }
+  },
+  "task": {
+    "task": "进行一次只读养号浏览验证：打开小红书搜索“羽毛球”，选择 1 篇与关键词直接相关的普通笔记，按真人浏览标准完整查看：进入后先等待 2 秒，阅读正文或媒体，慢速滑动到评论区并至少查看 3 条可见评论；然后返回并确认回到“羽毛球”搜索结果页后结束。全程不要点赞、收藏、评论、关注或发布内容。",
+    "timeoutMs": 360000,
+    "maxSteps": 40,
+    "allowedActions": ["AWAKE", "CLICK", "TYPE", "ENTER", "WAIT", "BACK", "SLIDE", "COMPLETE", "ABORT", "INFO"],
+    "allowedApps": ["com.xingin.xhs"],
+    "taskPolicy": {
+      "operationClass": "app.use.xhs",
+      "targetPackages": ["com.xingin.xhs"],
+      "allowedAppRoles": ["target_app", "system_dialog", "system_settings"],
+      "allowedActions": ["AWAKE", "CLICK", "TYPE", "ENTER", "WAIT", "BACK", "SLIDE", "COMPLETE", "ABORT", "INFO"],
+      "allowedApps": ["com.xingin.xhs"],
+      "confirmationPolicy": {
+        "publish": "forbidden",
+        "payment": "forbidden"
+      }
+    }
+  },
+  "thresholds": {
+    "minSuccessRate": 1,
+    "maxIdleP95Ms": 3000,
+    "maxIdleMs": 5000
+  }
+}

@@ -1,0 +1,56 @@
+{
+  "name": "xhs-max-step-terminal",
+  "kind": "task",
+  "iterations": 1,
+  "sampleIntervalMs": 100,
+  "expectedDevice": {
+    "skillSchemaVersion": 2,
+    "skillBundleVersion": 13,
+    "skillDigest": "4139c0177ecc13ea5a570e31a97af737ac653ad67cce7a717418d53d5143fdc2",
+    "skillSyncStatus": "current"
+  },
+  "expectedRuntime": {
+    "deviceSkillLayerMode": "enabled",
+    "devicePolicyMode": "audit"
+  },
+  "expectedResult": {
+    "success": false,
+    "statuses": ["stuck"]
+  },
+  "adb": {
+    "path": "/Users/zongkelong/Library/Android/sdk/platform-tools/adb",
+    "serialByDeviceId": {
+      "24094RAD4C-ea308f9d9d3467d4": "8TK7LVORDMU8PJEM",
+      "24094RAD4C-5bb6baafaa89f40d": "MVXK9T59J7BY7TL7"
+    },
+    "preTaskLaunchPackage": "com.lobster.agent",
+    "preTaskSettleMs": 500,
+    "assertions": {
+      "foregroundPackage": "com.xingin.xhs",
+      "uiTextEquals": ["首页", "发现"]
+    }
+  },
+  "task": {
+    "task": "打开小红书，只确认已经进入首页。不要进行任何互动。",
+    "timeoutMs": 60000,
+    "maxSteps": 1,
+    "allowedActions": ["AWAKE", "COMPLETE", "ABORT"],
+    "allowedApps": ["com.xingin.xhs"],
+    "taskPolicy": {
+      "operationClass": "content.browse",
+      "targetPackages": ["com.xingin.xhs"],
+      "allowedAppRoles": ["target_app", "system_dialog"],
+      "allowedActions": ["AWAKE", "COMPLETE", "ABORT"],
+      "allowedApps": ["com.xingin.xhs"],
+      "confirmationPolicy": {
+        "publish": "forbidden",
+        "payment": "forbidden"
+      }
+    }
+  },
+  "thresholds": {
+    "minSuccessRate": 1,
+    "maxIdleP95Ms": 3000,
+    "maxIdleMs": 5000
+  }
+}

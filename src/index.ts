@@ -11,12 +11,13 @@ import { WsServer, type VlmCredential } from './ws-server.js';
 import { TaskCoordinator } from './task-coordinator.js';
 import { BridgeClient } from './bridge.js';
 import { Orchestrator } from './orchestrator.js';
-import type { DeviceBridge, TaskResult, SubTaskResult, SubTaskExecuteParams, OrchestrationResult, ResumeParams, TaskStartParams, TaskEndParams } from './protocol.js';
+import type { DeviceBridge, TaskResult, SubTaskResult, SubTaskExecuteParams, OrchestrationResult, ResumeParams, TaskStartParams, TaskEndParams, CachedTaskResult, TaskResultQuery, TaskPolicy } from './protocol.js';
 import {
   createDeviceListTool,
   createExecuteTaskTool,
   createExecuteTaskAllTool,
   createExecuteBatchTool,
+  createGetTaskResultsTool,
   createCancelTaskTool,
   createGetStatusTool,
   createExecuteSkillTool,
@@ -112,8 +113,8 @@ class InProcessBridge {
     return this.registry.list();
   }
 
-  async executeTask(deviceId: string, task: string, timeoutMs = 300_000, guidance?: string, sessionId?: string, maxSteps?: number, allowedActions?: string[], allowedApps?: string[]): Promise<TaskResult> {
-    return this.coordinator.executeTask(deviceId, task, timeoutMs, guidance, sessionId, maxSteps, allowedActions, allowedApps);
+  async executeTask(deviceId: string, task: string, timeoutMs = 300_000, guidance?: string, sessionId?: string, maxSteps?: number, allowedActions?: string[], allowedApps?: string[], taskPolicy?: TaskPolicy): Promise<TaskResult> {
+    return this.coordinator.executeTask(deviceId, task, timeoutMs, guidance, sessionId, maxSteps, allowedActions, allowedApps, taskPolicy);
   }
 
   async executeTaskAll(task: string, timeoutMs = 300_000) {
@@ -127,6 +128,14 @@ class InProcessBridge {
   ) {
     const result = await this.coordinator.executeBatch(tasks, timeoutMs);
     return Object.fromEntries(result);
+  }
+
+  async getTaskResults(query: TaskResultQuery): Promise<CachedTaskResult[]> {
+    if (query.taskId) {
+      const entry = this.coordinator.getTaskResult(query.taskId);
+      return entry ? [entry] : [];
+    }
+    return this.coordinator.getRecentTaskResults(query.deviceId, query.limit);
   }
 
   async cancelTask(deviceId: string, taskId: string): Promise<void> {
@@ -156,7 +165,7 @@ class InProcessBridge {
 
 // ─── HTTP RPC server ───────────────────────────────────────────────────────────
 
-function startHttpServer(
+export function startHttpServer(
   port: number,
   coordinator: TaskCoordinator,
   bridge: InProcessBridge,
@@ -195,6 +204,25 @@ function startHttpServer(
       let body = '';
       req.on('data', chunk => { body += chunk; });
       req.on('end', async () => {
+        // Devices this request put to work. Aborting the HTTP request only
+        // tears down the client's socket — the coordinator promise and the
+        // phone keep running — so without this the device stays busy forever
+        // and its result is written into a dead socket. On a premature close
+        // we cancel what we dispatched so the phone stops and returns to idle.
+        const abortTargets = new Set<string>();
+        let settled = false;
+        res.on('close', () => {
+          if (settled) return;
+          for (const deviceId of abortTargets) {
+            try {
+              coordinator.cancelTask(deviceId, 'current', 'caller_disconnected');
+              logger.warn(`[tabby-control] client disconnected — cancelled task on ${deviceId}`);
+            } catch {
+              // Already finished, already cancelled, or device offline.
+            }
+          }
+        });
+
         try {
           const { method, params } = JSON.parse(body) as { method: string; params: Record<string, unknown> };
           let result: unknown;
@@ -206,24 +234,50 @@ function startHttpServer(
               result = await bridge.listDevices();
               break;
             case 'device_execute_task':
+              abortTargets.add(params.deviceId as string);
               result = await coordinator.executeTask(
                 params.deviceId as string,
                 params.task as string,
                 params.timeoutMs as number ?? 300_000,
+                params.guidance as string | undefined,
+                params.sessionId as string | undefined,
+                params.maxSteps as number | undefined,
+                params.allowedActions as string[] | undefined,
+                params.allowedApps as string[] | undefined,
+                params.taskPolicy as TaskPolicy | undefined,
               );
               break;
-            case 'device_execute_task_all':
+            case 'device_execute_task_all': {
+              // executeTaskAll picks its targets itself, so snapshot the same
+              // idle set here to know what an aborted request has to cancel.
+              for (const device of await bridge.listDevices()) {
+                if (device.status === 'idle') abortTargets.add(device.deviceId);
+              }
               result = Object.fromEntries(
                 await coordinator.executeTaskAll(params.task as string, params.timeoutMs as number ?? 300_000),
               );
               break;
-            case 'device_execute_batch':
+            }
+            case 'device_execute_batch': {
+              const tasks = params.tasks as Array<{ deviceId: string; task: string }>;
+              for (const { deviceId } of tasks ?? []) abortTargets.add(deviceId);
               result = Object.fromEntries(
-                await coordinator.executeBatch(params.tasks as Array<{ deviceId: string; task: string }>, params.timeoutMs as number ?? 300_000),
+                await coordinator.executeBatch(tasks, params.timeoutMs as number ?? 300_000),
               );
               break;
+            }
+            case 'device_get_task_results':
+              result = await bridge.getTaskResults({
+                taskId: params.taskId as string | undefined,
+                deviceId: params.deviceId as string | undefined,
+                limit: params.limit as number | undefined,
+              });
+              break;
             case 'device_cancel_task':
-              coordinator.cancelTask(params.deviceId as string, params.taskId as string);
+              coordinator.cancelTask(
+                params.deviceId as string,
+                (params.taskId as string | undefined) ?? 'current',
+              );
               result = { cancelled: true };
               break;
             case 'device_get_status':
@@ -277,6 +331,7 @@ function startHttpServer(
               return;
           }
 
+          settled = true;
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ result }));
         } catch (err) {
@@ -285,7 +340,9 @@ function startHttpServer(
             : msg.includes('TIMEOUT') ? 'TIMEOUT'
             : msg.includes('OFFLINE') ? 'DEVICE_OFFLINE'
             : msg.includes('BUSY') ? 'TASK_ALREADY_RUNNING'
+            : msg.includes('CANCELLED') ? 'CANCELLED'
             : 'INTERNAL_ERROR';
+          settled = true;
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: { code, message: msg } }));
         }
@@ -399,11 +456,12 @@ export default {
       }
       async ping() { return (await this._get()).ping(); }
       async listDevices() { return (await this._get()).listDevices(); }
-      async executeTask(deviceId: string, task: string, timeoutMs?: number, guidance?: string, sessionId?: string, maxSteps?: number, allowedActions?: string[], allowedApps?: string[]): Promise<TaskResult> {
-        return (await this._get()).executeTask(deviceId, task, timeoutMs, guidance, sessionId, maxSteps, allowedActions, allowedApps);
+      async executeTask(deviceId: string, task: string, timeoutMs?: number, guidance?: string, sessionId?: string, maxSteps?: number, allowedActions?: string[], allowedApps?: string[], taskPolicy?: TaskPolicy): Promise<TaskResult> {
+        return (await this._get()).executeTask(deviceId, task, timeoutMs, guidance, sessionId, maxSteps, allowedActions, allowedApps, taskPolicy);
       }
       async executeTaskAll(task: string, timeoutMs?: number) { return (await this._get()).executeTaskAll(task, timeoutMs); }
       async executeBatch(tasks: Array<{ deviceId: string; task: string }>, timeoutMs?: number) { return (await this._get()).executeBatch(tasks, timeoutMs); }
+      async getTaskResults(query: TaskResultQuery) { return (await this._get()).getTaskResults(query); }
       async cancelTask(deviceId: string, taskId: string) { return (await this._get()).cancelTask(deviceId, taskId); }
       async getStatus(deviceId: string) { return (await this._get()).getStatus(deviceId); }
       async executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs?: number) {
@@ -469,6 +527,7 @@ export default {
     api.registerTool(makeTool(createExecuteTaskTool));
     api.registerTool(makeTool(createExecuteTaskAllTool));
     api.registerTool(makeTool(createExecuteBatchTool));
+    api.registerTool(makeTool(createGetTaskResultsTool));
     api.registerTool(makeTool(createCancelTaskTool));
     api.registerTool(makeTool(createGetStatusTool));
     api.registerTool(() => {
@@ -478,7 +537,7 @@ export default {
       return tool;
     });
 
-    logger.info('[tabby-control] registered 7 device control tools (lazy bridge)');
+    logger.info('[tabby-control] registered 8 device control tool factories (lazy bridge)');
 
     // Start server in background
     httpServer.listen(config.wsPort, '0.0.0.0', () => {

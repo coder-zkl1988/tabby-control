@@ -1,0 +1,65 @@
+{
+  "name": "xhs-hotsearch-artifact",
+  "kind": "task",
+  "iterations": 1,
+  "sampleIntervalMs": 200,
+  "forbiddenAppPrefixes": [
+    "com.android.chrome",
+    "com.mi.browser",
+    "com.tencent.mtt",
+    "com.UCMobile",
+    "org.mozilla.firefox",
+    "com.microsoft.emmx"
+  ],
+  "expectedDevice": {
+    "skillSchemaVersion": 2,
+    "skillBundleVersion": 13,
+    "skillDigest": "4139c0177ecc13ea5a570e31a97af737ac653ad67cce7a717418d53d5143fdc2",
+    "skillSyncStatus": "current"
+  },
+  "expectedRuntime": {
+    "deviceSkillLayerMode": "enabled",
+    "devicePolicyMode": "enforce"
+  },
+  "expectedResult": {
+    "minArtifacts": 1,
+    "artifactMimeTypes": ["image/jpeg"],
+    "requireArtifactFiles": true,
+    "minArtifactBytes": 1024
+  },
+  "adb": {
+    "path": "/Users/zongkelong/Library/Android/sdk/platform-tools/adb",
+    "serialByDeviceId": {
+      "24094RAD4C-ea308f9d9d3467d4": "8TK7LVORDMU8PJEM",
+      "24094RAD4C-5bb6baafaa89f40d": "MVXK9T59J7BY7TL7"
+    },
+    "preTaskLaunchPackage": "com.lobster.agent",
+    "preTaskSettleMs": 500,
+    "assertions": {
+      "foregroundPackage": "com.xingin.xhs"
+    }
+  },
+  "task": {
+    "task": "打开小红书首页的搜索落地页，找 1 个当前页面有明确热搜榜排名或“热”标识的非争议话题，记录热度证据；进入该话题结果页，选择 1 篇直接相关且互动数据较高的普通图文热帖，阅读标题、作者、正文要点和可见点赞/收藏/评论数据。打开第 1 张图片的单图大图并等待清晰加载，执行一次 CAPTURE_ARTIFACT，产物名称使用“热搜话题-帖子标题-图1”。最后把话题、热度证据、帖子字段和桌面产物名结构化返回。不要点赞、收藏、评论、关注、保存到相册或发布内容。若当前版本没有任何可验证热度标识，明确返回“未发现可验证热搜入口”，不要把普通联想词当热搜。",
+    "timeoutMs": 600000,
+    "maxSteps": 42,
+    "allowedActions": ["AWAKE", "CLICK", "TYPE", "ENTER", "WAIT", "BACK", "SLIDE", "CAPTURE_ARTIFACT", "COMPLETE", "ABORT", "INFO"],
+    "allowedApps": ["com.xingin.xhs"],
+    "taskPolicy": {
+      "operationClass": "content.search",
+      "targetPackages": ["com.xingin.xhs"],
+      "allowedAppRoles": ["target_app", "system_dialog", "system_settings"],
+      "allowedActions": ["AWAKE", "CLICK", "TYPE", "ENTER", "WAIT", "BACK", "SLIDE", "CAPTURE_ARTIFACT", "COMPLETE", "ABORT", "INFO"],
+      "allowedApps": ["com.xingin.xhs"],
+      "confirmationPolicy": {
+        "publish": "forbidden",
+        "payment": "forbidden"
+      }
+    }
+  },
+  "thresholds": {
+    "minSuccessRate": 1,
+    "maxIdleP95Ms": 3000,
+    "maxIdleMs": 5000
+  }
+}

@@ -7,7 +7,7 @@
  */
 
 import type { DeviceBridge } from './protocol.js';
-import type { DeviceInfo, TaskResult } from './protocol.js';
+import type { DeviceInfo, TaskResult, TaskPolicy } from './protocol.js';
 import type { Orchestrator } from './orchestrator.js';
 import type { DeviceRegistry } from './ws-server.js';
 
@@ -28,6 +28,17 @@ function formatDevices(devices: DeviceInfo[]): string {
       d.batteryLevel != null ? `🔋${d.batteryLevel}%` : '',
       d.isCharging ? '⚡' : '',
       d.wifiSsid ? `📶${d.wifiSsid}` : '',
+      d.skillSyncStatus
+        ? `skills=${d.skillSyncStatus}@${d.skillBundleVersion ?? 0}`
+        : '',
+      d.skillSyncError ? `skillError=${d.skillSyncError}` : '',
+      d.deviceSkillLayerMode || d.devicePolicyMode
+        ? `runtime=${d.deviceSkillLayerMode ?? 'off'}/${d.devicePolicyMode ?? 'off'}`
+        : '',
+      d.currentOperationClass ? `operation=${d.currentOperationClass}` : '',
+      d.currentAppRole ? `role=${d.currentAppRole}` : '',
+      d.activeSkills?.length ? `activeSkills=${d.activeSkills.join(',')}` : '',
+      d.lastBlockedReason ? `lastBlocked=${d.lastBlockedReason}` : '',
     ].filter(Boolean);
     return `  - [${d.deviceId}] ${parts.join(' | ')}`;
   });
@@ -66,13 +77,22 @@ function formatTaskResult(result: TaskResult, deviceId: string): string {
     }
   } else if (result.status === 'blocked') {
     sections.push(`🔒 Device requires user action: ${result.message ?? 'unlock or confirm on the phone, then retry'}`);
+    if (result.errorCode) sections.push(`Policy code: ${result.errorCode}`);
+    if (result.blockReason) sections.push(`Policy reason: ${result.blockReason}`);
     sections.push(`The device agent did not start the task. Resolve the condition on the phone before retrying.`);
     if (result.totalSteps !== undefined) sections.push(`Steps: ${result.totalSteps}`);
   } else if (result.status === 'aborted') {
-    // The phone-side model deliberately gave up (task judged impossible) —
-    // not an infrastructure error, so a verbatim retry will abort again.
-    sections.push(`🛑 Task aborted by the device agent: ${result.message ?? 'no reason given'}`);
-    sections.push(`This was the on-device model's own decision, not a system error. Re-phrase the task or provide more specific guidance instead of retrying verbatim.`);
+    if (result.errorCode === 'CALLER_DISCONNECTED') {
+      sections.push(`🛑 Task cancelled after the desktop/tool connection closed: ${result.message ?? 'no reason given'}`);
+      sections.push(`This is a caller disconnect, not an on-device model decision. Report the interruption and do not re-run the task unless the user asks.`);
+    } else if (result.errorCode === 'USER_CANCELLED') {
+      sections.push(`🛑 Task cancelled by user request: ${result.message ?? 'no reason given'}`);
+      sections.push(`Respect the cancellation and do not re-run the task unless the user explicitly asks.`);
+    } else {
+      sections.push(`🛑 Task aborted by the device agent: ${result.message ?? 'no reason given'}`);
+      sections.push(`This was the on-device model's own decision, not a system error. Re-phrase the task or provide more specific guidance instead of retrying verbatim.`);
+    }
+    if (result.errorCode) sections.push(`Reason code: ${result.errorCode}`);
     if (result.totalSteps !== undefined) sections.push(`Steps before abort: ${result.totalSteps}`);
   } else if (result.status === 'stuck') {
     sections.push(`🔁 Task stuck (no screen progress detected): ${result.message ?? 'Unknown'}`);
@@ -99,6 +119,10 @@ function formatTaskResult(result: TaskResult, deviceId: string): string {
     if (result.totalSteps !== undefined) sections.push(`Steps: ${result.totalSteps}`);
   }
 
+  if (!result.success && result.duration !== undefined) {
+    sections.push(`Duration: ${(result.duration / 1000).toFixed(1)}s`);
+  }
+
   // Append final screenshot as file path (plugin saved it to taskData directory)
   if (result.finalScreenshot) {
     const isFilePath = result.finalScreenshot.startsWith('/');
@@ -123,6 +147,11 @@ function formatTaskResult(result: TaskResult, deviceId: string): string {
 function formatBatchResults(results: Record<string, TaskResult>): string {
   const lines = ['Batch execution results:'];
   for (const [deviceId, result] of Object.entries(results)) {
+    if (result.needsInteraction) {
+      lines.push(`⏸️ [${deviceId}] ${result.interactionMessage ?? result.message ?? 'Device needs guidance'}`);
+      lines.push(`  Resume with device_execute_task using sessionId: "${result.taskId}" and a guidance value.`);
+      continue;
+    }
     const icon = result.success ? '✅' : result.status === 'blocked' ? '🔒' : result.status === 'aborted' ? '🛑' : '❌';
     const msg = result.message ?? (result.success ? 'Done' : 'Failed');
     const statusTag = result.status && result.status !== 'completed' ? ` (${result.status})` : '';
@@ -139,7 +168,7 @@ export function createDeviceListTool(client: DeviceBridge) {
     label: 'List Connected Devices',
     description: [
       'List all Android devices currently connected to Tabby.',
-      'Returns device ID, model, OS version, screen size, status (idle/busy/error), and current app.',
+      'Returns device ID, model, OS version, screen size, task status, current app, and phone skill sync status.',
       'Use this first to discover available devices before sending tasks.',
     ].join(' '),
     parameters: { type: "object", properties: {} },
@@ -198,7 +227,9 @@ export function createExecuteTaskTool(client: DeviceBridge) {
         },
         timeout: {
           type: 'number',
-          description: 'Timeout in milliseconds (default: 300000, max: 600000)',
+          description: 'Inactivity timeout in milliseconds — how long to wait with NO progress from the '
+            + 'device before giving up (default: 300000, max: 600000). This is NOT a total runtime budget: '
+            + 'the device reports progress every ~15s, so a task that keeps working runs as long as it needs.',
           default: 300000,
         },
         guidance: {
@@ -223,12 +254,65 @@ export function createExecuteTaskTool(client: DeviceBridge) {
           items: { type: 'string' },
           description: 'Whitelist of allowed app names or packages (e.g., ["微信", "com.tencent.mm"]). Only for Launch actions.',
         },
+        taskPolicy: {
+          type: 'object',
+          description: 'Structured phone policy. It may narrow phone defaults but cannot enable browser APK installation or payment.',
+          properties: {
+            operationClass: {
+              type: 'string',
+              description: 'Semantic operation, e.g. app.install, account.login, content.publish.',
+            },
+            targetPackages: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+            allowedAppRoles: {
+              type: 'array',
+              items: {
+                type: 'string',
+                enum: [
+                  'target_app',
+                  'official_store',
+                  'system_installer',
+                  'system_settings',
+                  'default_sms',
+                  'gallery',
+                  'file_picker',
+                  'browser',
+                  'system_dialog',
+                  'other',
+                ],
+              },
+            },
+            installSourcePolicy: {
+              type: 'string',
+              enum: ['official_store_only'],
+            },
+            allowBrowserDownload: { type: 'boolean' },
+            allowedActions: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+            allowedApps: {
+              type: 'array',
+              items: { type: 'string' },
+            },
+            confirmationPolicy: {
+              type: 'object',
+              properties: {
+                login: { type: 'string', enum: ['required', 'forbidden'] },
+                publish: { type: 'string', enum: ['required', 'forbidden'] },
+                payment: { type: 'string', enum: ['forbidden'] },
+              },
+            },
+          },
+        },
       },
       required: ['deviceId', 'task'],
     },
     async execute(
       _id: string,
-      params: { deviceId?: string; task?: string; timeout?: number; guidance?: string; sessionId?: string; maxSteps?: number; allowedActions?: string[]; allowedApps?: string[] },
+      params: { deviceId?: string; task?: string; timeout?: number; guidance?: string; sessionId?: string; maxSteps?: number; allowedActions?: string[]; allowedApps?: string[]; taskPolicy?: TaskPolicy },
     ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
       if (!params.deviceId || !params.task) {
         return { content: [{ type: 'text', text: 'deviceId and task are required.' }], isError: true };
@@ -243,6 +327,7 @@ export function createExecuteTaskTool(client: DeviceBridge) {
           params.maxSteps,
           params.allowedActions,
           params.allowedApps,
+          params.taskPolicy,
         );
         const text = formatTaskResult(result, params.deviceId);
         return { content: [{ type: 'text', text }], isError: !result.success };
@@ -283,7 +368,9 @@ export function createExecuteTaskAllTool(client: DeviceBridge) {
         },
         timeout: {
           type: 'number',
-          description: 'Timeout per device in milliseconds (default: 300000)',
+          description: 'Per-device inactivity timeout in milliseconds — how long to wait with NO progress '
+            + 'from a device before giving up on it (default: 300000). This is NOT a total runtime budget: '
+            + 'a device that keeps reporting progress runs as long as its task needs.',
           default: 300000,
         },
       },
@@ -339,7 +426,9 @@ export function createExecuteBatchTool(client: DeviceBridge) {
         },
         timeout: {
           type: 'number',
-          description: 'Timeout per device in milliseconds (default: 300000)',
+          description: 'Per-device inactivity timeout in milliseconds — how long to wait with NO progress '
+            + 'from a device before giving up on it (default: 300000). This is NOT a total runtime budget: '
+            + 'a device that keeps reporting progress runs as long as its task needs.',
           default: 300000,
         },
       },
@@ -375,36 +464,98 @@ export function createExecuteBatchTool(client: DeviceBridge) {
   };
 }
 
+export function createGetTaskResultsTool(client: DeviceBridge) {
+  return {
+    name: 'device_get_task_results',
+    label: 'Recover Finished Task Results',
+    description: [
+      'Fetch results of tasks that already finished on a device.',
+      'USE THIS when an execute call returned an error but the device may still have done the work —',
+      'a cancelled or aborted request, a timeout, or a lost connection.',
+      'The phone keeps working after the caller goes away, and its result is retained here,',
+      'so check this before re-running the task and repeating the work.',
+      'Omit taskId to list the most recent results, optionally narrowed to one device.',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        taskId: { type: 'string', description: 'Exact task id to look up' },
+        deviceId: { type: 'string', description: 'Only results from this device' },
+        limit: { type: 'number', description: 'Max results when listing (default: 10)' },
+      },
+    },
+    async execute(
+      _id: string,
+      params: { taskId?: string; deviceId?: string; limit?: number },
+    ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+      try {
+        const entries = await client.getTaskResults({
+          taskId: params.taskId,
+          deviceId: params.deviceId,
+          limit: params.limit,
+        });
+        if (!entries.length) {
+          return {
+            content: [{
+              type: 'text',
+              text: 'No retained task results match. The task may still be running (check device_list), '
+                + 'or its result has aged out.',
+            }],
+          };
+        }
+        const sections = entries.map(entry => {
+          const age = Math.round((Date.now() - entry.completedAt) / 1000);
+          const header = `── [${entry.deviceId}] ${entry.taskId} — finished ${age}s ago`
+            + `${entry.orphaned ? ' (result was never collected)' : ''}`;
+          return `${header}\n${formatTaskResult(entry.result, entry.deviceId)}`;
+        });
+        return { content: [{ type: 'text', text: sections.join('\n\n') }] };
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : String(err);
+        return {
+          content: [{ type: 'text', text: `device_get_task_results failed: ${msg}` }],
+          isError: true,
+        };
+      }
+    },
+  };
+}
+
 export function createCancelTaskTool(client: DeviceBridge) {
   return {
     name: 'device_cancel_task',
     label: 'Cancel Running Task',
     description:
-      'Cancel a currently running task on a specified device. Use after observing a task going wrong.',
+      'Cancel a currently running task on a specified device. Omit taskId to cancel the current task.',
     parameters: {
       type: 'object',
       properties: {
         deviceId: { type: 'string', description: 'Device ID' },
-        taskId: { type: 'string', description: 'Task ID to cancel (from the execute response)' },
+        taskId: {
+          type: 'string',
+          description: 'Task ID to cancel (from the execute response). Defaults to the current task.',
+          default: 'current',
+        },
       },
-      required: ['deviceId', 'taskId'],
+      required: ['deviceId'],
     },
     async execute(
       _id: string,
       params: { deviceId?: string; taskId?: string },
     ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
-      if (!params.deviceId || !params.taskId) {
+      if (!params.deviceId) {
         return {
-          content: [{ type: 'text', text: 'deviceId and taskId are required.' }],
+          content: [{ type: 'text', text: 'deviceId is required.' }],
           isError: true,
         };
       }
+      const taskId = params.taskId ?? 'current';
       try {
-        await client.cancelTask(params.deviceId, params.taskId);
+        await client.cancelTask(params.deviceId, taskId);
         return {
           content: [{
             type: 'text',
-            text: `Task ${params.taskId} on device ${params.deviceId} has been cancelled.`,
+            text: `Task ${taskId} on device ${params.deviceId} has been cancelled.`,
           }],
         };
       } catch (err) {

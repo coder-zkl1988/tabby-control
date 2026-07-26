@@ -1,0 +1,19 @@
+{
+  "id": "android-app-install-v1",
+  "kind": "system",
+  "targetPackages": [],
+  "name": "Android 官方市场安装",
+  "version": 2,
+  "priority": 90,
+  "author": "system",
+  "activation": {
+    "intents": ["app.install", "app.update"],
+    "taskKeywords": ["安装", "下载应用", "更新应用", "应用市场", "应用商店"],
+    "packages": ["role:official_store", "role:system_installer"],
+    "manufacturers": ["*"],
+    "androidApiMin": 26,
+    "taskScoped": true,
+    "surfaceScoped": true
+  },
+  "capabilities": ["app.install.official_store"]
+}

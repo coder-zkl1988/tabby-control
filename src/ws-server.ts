@@ -49,6 +49,16 @@ function flog(msg: string): void {
     appendFileSync(DEBUG_LOG, line);
   } catch { /* ignore */ }
 }
+
+function describeJsonMessage(message: object, length: number): string {
+  const record = message as Record<string, unknown>;
+  const parts = [
+    typeof record.channel === 'string' ? `channel=${record.channel}` : '',
+    typeof record.method === 'string' ? `method=${record.method}` : '',
+    typeof record.type === 'string' ? `type=${record.type}` : '',
+  ].filter(Boolean);
+  return `${parts.join(',') || 'untyped'},len=${length}`;
+}
 import type {
   DeviceInfo,
   DeviceCapabilities,
@@ -61,6 +71,7 @@ import type {
 import {
   MirrorSnapshotSchema,
 } from './protocol.js';
+import { PhoneSkillCatalog } from './phone-skill-catalog.js';
 
 // ─── DeviceSession ───────────────────────────────────────────────────────────
 
@@ -179,15 +190,23 @@ export class DeviceRegistry {
   updateStatus(deviceId: string, patch: Partial<DeviceInfo>): void {
     const s = this.devices.get(deviceId);
     if (!s) return;
-    // Apply unit conversions for fields that arrive as raw numbers
-    const converted: Partial<DeviceInfo> = {
-      ...patch,
-      osVersion: formatOsVersion(patch.osVersion as number | string | undefined),
-      totalRam: formatBytes(patch.totalRam as number | undefined),
-      availableRam: formatBytes(patch.availableRam as number | undefined),
-      totalStorage: formatBytes(patch.totalStorage as number | undefined),
-      availableStorage: formatBytes(patch.availableStorage as number | undefined),
-    };
+    // Only normalize fields present in this patch. Task and skill updates are
+    // intentionally sparse and must not erase static device capabilities.
+    const converted: Partial<DeviceInfo> = { ...patch };
+    if ('osVersion' in patch) {
+      converted.osVersion = formatOsVersion(patch.osVersion);
+    }
+    for (const field of [
+      'totalRam',
+      'availableRam',
+      'totalStorage',
+      'availableStorage',
+    ] as const) {
+      if (field in patch) {
+        const value = patch[field];
+        converted[field] = typeof value === 'string' ? value : formatBytes(value);
+      }
+    }
     s.info = { ...s.info, ...converted, lastSeen: Date.now() };
     s.lastActivityAt = Date.now();
     this.notifyChange();
@@ -228,14 +247,16 @@ export class DeviceRegistry {
   }
 
   /**
-   * Remove a device immediately on WS close.
-   * The phone app handles reconnection itself — no grace period needed.
+   * Remove a device immediately on WS close, but only when the closing socket
+   * still owns the registry entry. A delayed close from a replaced connection
+   * must not unregister the phone's newer connection.
    */
-  removeImmediately(deviceId: string): void {
+  removeImmediately(deviceId: string, ws: WebSocket): boolean {
     const s = this.devices.get(deviceId);
-    if (!s) return;
+    if (!s || s.ws !== ws) return false;
     this.devices.delete(deviceId);
     this.notifyChange();
+    return true;
   }
 
   onDeviceChange(callback: DeviceChangeCallback): () => void {
@@ -310,12 +331,17 @@ export class WsServer {
    */
   private vlmCredentialProvider?: () => VlmCredential | null;
   private telemetryConsentProvider?: () => boolean | null;
+  private phoneSkillCatalog: PhoneSkillCatalog;
 
   constructor(
     private port: number,
     private ipcNotifier: (channel: string, data: unknown) => void,
   ) {
     this.registry = new DeviceRegistry();
+    this.phoneSkillCatalog = PhoneSkillCatalog.loadDefault(
+      (deviceId, message) => this.sendToDevice(deviceId, message),
+      (deviceId, patch) => this.registry.updateStatus(deviceId, patch),
+    );
     this.wss = new WSServer({ noServer: true });
     this.mirrorWss = new WSServer({ noServer: true });
     this.wss.on('connection', this.handleConnection.bind(this));
@@ -395,7 +421,7 @@ export class WsServer {
     }
     const json = JSON.stringify(message);
     session.ws.send(json);
-    flog(`SEND TO DEVICE: device=${deviceId}, msgLen=${json.length}, msg=${json.slice(0, 200)}`);
+    flog(`SEND TO DEVICE: device=${deviceId}, ${describeJsonMessage(message, json.length)}`);
     return true;
   }
 
@@ -562,7 +588,7 @@ export class WsServer {
       // flog() still records every message to the on-disk debug log.
       const msgPreview = isBinary
         ? `binary(${(data as Buffer).length}b)`
-        : `text(${(data as Buffer).length}b):${(data as Buffer).toString().substring(0, 80)}`;
+        : `text(${(data as Buffer).length}b)`;
       if (VERBOSE) {
         console.log(`[tabby-control] phone msg: device=${deviceId}, ${msgPreview}`);
       }
@@ -629,6 +655,8 @@ export class WsServer {
           this.handleMirrorMessage(deviceId!, msg);
         } else if (channel === 'control') {
           this.handleControlMessage(deviceId!, msg);
+        } else if (channel === 'skill') {
+          this.phoneSkillCatalog.handleMessage(deviceId!, msg);
         }
       } catch (err) {
         console.warn('[tabby-control] Failed to parse message:', err);
@@ -639,8 +667,13 @@ export class WsServer {
       clearTimeout(authTimeout);
       clearInterval(heartbeatInterval);
       if (deviceId) {
-        // Remove immediately — phone app handles reconnection itself
-        this.registry.removeImmediately(deviceId);
+        // A stale socket can close after the same device has reconnected. Only
+        // the socket that still owns the registry entry may publish a
+        // disconnect or remove the replacement connection.
+        if (!this.registry.removeImmediately(deviceId, ws)) {
+          flog(`PHONE CLOSE IGNORED: stale connection, device=${deviceId}`);
+          return;
+        }
         this.ipcNotifier('device:disconnected', { deviceId });
         void this.notifyController({ type: 'device_disconnected', deviceId });
         console.log(`[tabby-control] device disconnected: ${deviceId}`);

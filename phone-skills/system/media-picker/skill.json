@@ -1,0 +1,19 @@
+{
+  "id": "android-media-picker-v1",
+  "kind": "system",
+  "targetPackages": [],
+  "name": "Android 媒体选择器",
+  "version": 1,
+  "priority": 80,
+  "author": "system",
+  "activation": {
+    "intents": ["media.select", "content.publish"],
+    "taskKeywords": ["相册", "图片", "照片", "选图", "上传图片", "从相册选择", "图文"],
+    "packages": ["com.google.android.providers.media.module", "com.android.documentsui", "role:gallery", "role:file_picker"],
+    "manufacturers": ["*"],
+    "androidApiMin": 26,
+    "taskScoped": true,
+    "surfaceScoped": true
+  },
+  "capabilities": ["media.picker"]
+}

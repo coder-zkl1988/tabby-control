@@ -59,10 +59,142 @@ export const ChannelSchema = z.union([
   z.literal('task'),
   z.literal('mirror'),
   z.literal('control'),
+  z.literal('skill'),
 ]);
 export type Channel = z.infer<typeof ChannelSchema>;
 
+// ─── Phone Skill Channel ────────────────────────────────────────────────────
+
+export const PhoneSkillExampleStepSchema = z.object({
+  observe: z.string(),
+  action: z.string(),
+});
+
+export const PhoneSkillExampleSchema = z.object({
+  scenario: z.string().min(1),
+  steps: z.array(PhoneSkillExampleStepSchema).min(1),
+});
+
+export const PhoneSubskillSchema = z.object({
+  id: z.string().min(1),
+  name: z.string().min(1),
+  file: z.string().min(1),
+  keywords: z.array(z.string()),
+  content: z.string(),
+  priority: z.number().int().default(0),
+  requiresCapabilities: z.array(z.string().min(1)).default([]),
+});
+
+export const PhoneSkillKindSchema = z.enum(['system', 'oem', 'app']);
+
+export const PhoneSkillActivationSchema = z.object({
+  intents: z.array(z.string().min(1)).default([]),
+  taskKeywords: z.array(z.string().min(1)).default([]),
+  packages: z.array(z.string().min(1)).default([]),
+  manufacturers: z.array(z.string().min(1)).min(1).default(['*']),
+  androidApiMin: z.number().int().positive().default(26),
+  taskScoped: z.boolean().default(false),
+  surfaceScoped: z.boolean().default(false),
+});
+
+export const PhoneSkillSchema = z.object({
+  id: z.string().min(1),
+  kind: PhoneSkillKindSchema.default('app'),
+  targetPackages: z.array(z.string().min(1)).default([]),
+  name: z.string().min(1),
+  version: z.number().int().positive(),
+  instructions: z.string(),
+  activation: PhoneSkillActivationSchema,
+  capabilities: z.array(z.string().min(1)).default([]),
+  examples: z.array(PhoneSkillExampleSchema).default([]),
+  subskills: z.array(PhoneSubskillSchema).default([]),
+  priority: z.number().int().default(0),
+  author: z.string().min(1).default('system'),
+});
+export type PhoneSkill = z.infer<typeof PhoneSkillSchema>;
+
+export const PhoneSkillBundleSchema = z.object({
+  schemaVersion: z.literal(2),
+  bundleVersion: z.number().int().positive(),
+  minAppVersion: z.string().min(1),
+  skills: z.array(PhoneSkillSchema).min(1),
+});
+export type PhoneSkillBundle = z.infer<typeof PhoneSkillBundleSchema>;
+
+export const PhoneSkillGeneratedManifestSchema = z.object({
+  schemaVersion: z.literal(2),
+  bundleVersion: z.number().int().positive(),
+  minAppVersion: z.string().min(1),
+  digestAlgorithm: z.literal('SHA-256'),
+  digest: z.string().regex(/^[a-f0-9]{64}$/),
+  skills: z.array(z.object({
+    id: z.string().min(1),
+    kind: PhoneSkillKindSchema,
+    version: z.number().int().positive(),
+    targetPackages: z.array(z.string().min(1)),
+  })).min(1),
+});
+export type PhoneSkillGeneratedManifest = z.infer<typeof PhoneSkillGeneratedManifestSchema>;
+
+export const PhoneSkillSyncStatusSchema = z.enum([
+  'unknown',
+  'syncing',
+  'current',
+  'error',
+  'incompatible',
+]);
+export type PhoneSkillSyncStatus = z.infer<typeof PhoneSkillSyncStatusSchema>;
+
 // ─── Task Channel ────────────────────────────────────────────────────────────
+
+export const AppRoleSchema = z.enum([
+  'target_app',
+  'official_store',
+  'system_installer',
+  'system_settings',
+  'default_sms',
+  'gallery',
+  'file_picker',
+  'browser',
+  'system_dialog',
+  'other',
+]);
+export type AppRole = z.infer<typeof AppRoleSchema>;
+
+export const ConfirmationPolicySchema = z.object({
+  login: z.enum(['required', 'forbidden']).optional(),
+  publish: z.enum(['required', 'forbidden']).optional(),
+  payment: z.literal('forbidden').optional(),
+});
+
+export const TaskPolicySchema = z.object({
+  operationClass: z.string().min(1).optional(),
+  targetPackages: z.array(z.string().min(1)).optional(),
+  allowedAppRoles: z.array(AppRoleSchema).optional(),
+  installSourcePolicy: z.literal('official_store_only').optional(),
+  allowBrowserDownload: z.boolean().optional(),
+  allowedActions: z.array(z.string().min(1)).optional(),
+  allowedApps: z.array(z.string().min(1)).optional(),
+  confirmationPolicy: ConfirmationPolicySchema.optional(),
+}).superRefine((policy, ctx) => {
+  const installOperation =
+    policy.operationClass === 'app.install' || policy.operationClass === 'app.update';
+  if (installOperation && policy.allowBrowserDownload === true) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['allowBrowserDownload'],
+      message: '安装任务禁止浏览器下载',
+    });
+  }
+  if (installOperation && policy.allowedAppRoles?.includes('browser')) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['allowedAppRoles'],
+      message: '安装任务不能允许 browser 角色',
+    });
+  }
+});
+export type TaskPolicy = z.infer<typeof TaskPolicySchema>;
 
 export const ExecuteParamsSchema = z.object({
   taskId: TaskIdSchema,
@@ -73,6 +205,7 @@ export const ExecuteParamsSchema = z.object({
   sessionId: z.string().optional(),
   allowedActions: z.array(z.string()).optional(),
   allowedApps: z.array(z.string()).optional(),
+  taskPolicy: TaskPolicySchema.optional(),
 });
 export type ExecuteParams = z.infer<typeof ExecuteParamsSchema>;
 
@@ -271,8 +404,33 @@ export const TaskResultSchema = z.object({
   interactionMessage: z.string().optional(),
   interactionScreenshot: z.string().optional(), // file path
   artifacts: z.array(TaskArtifactSchema).optional(),
+  errorCode: z.string().optional(),
+  policyDecision: z.enum(['allow', 'audit_block', 'block']).optional(),
+  blockReason: z.string().optional(),
 });
 export type TaskResult = z.infer<typeof TaskResultSchema>;
+
+/**
+ * A finished task's result, retained after delivery so work is never lost when
+ * the caller is gone — an aborted request, a timed-out waiter, or a cancel that
+ * raced the phone's answer.
+ */
+export const CachedTaskResultSchema = z.object({
+  taskId: TaskIdSchema,
+  deviceId: z.string().min(1),
+  result: TaskResultSchema,
+  completedAt: TimestampSchema,
+  /** True when no caller was awaiting this result at the time it arrived. */
+  orphaned: z.boolean(),
+});
+export type CachedTaskResult = z.infer<typeof CachedTaskResultSchema>;
+
+/** Selector for {@link DeviceBridge.getTaskResults}. */
+export interface TaskResultQuery {
+  taskId?: string;
+  deviceId?: string;
+  limit?: number;
+}
 
 export const CancelResultSchema = z.object({
   taskId: TaskIdSchema,
@@ -367,6 +525,21 @@ export const DeviceInfoSchema = z.object({
   wifiSsid: z.string().optional(),
   isWifiConnected: z.boolean().optional(),
   isCharging: z.boolean().optional(),
+  skillSchemaVersion: z.number().int().optional(),
+  skillBundleVersion: z.number().int().optional(),
+  skillDigest: z.string().optional(),
+  skillSyncStatus: PhoneSkillSyncStatusSchema.optional(),
+  skillSyncError: z.string().optional(),
+  skillLastSyncedAt: TimestampSchema.optional(),
+  currentOperationClass: z.string().optional(),
+  currentAppRole: AppRoleSchema.optional(),
+  activeSkills: z.array(z.string()).optional(),
+  skippedSkills: z.array(z.string()).optional(),
+  deviceSkillLayerMode: z.enum(['off', 'shadow', 'enabled']).optional(),
+  devicePolicyMode: z.enum(['off', 'audit', 'enforce']).optional(),
+  lastPolicyDecision: z.enum(['allow', 'audit_block', 'block']).optional(),
+  lastPolicyCode: z.string().optional(),
+  lastBlockedReason: z.string().optional(),
 });
 export type DeviceInfo = z.infer<typeof DeviceInfoSchema>;
 
@@ -394,9 +567,20 @@ export type DeviceErrorCode = z.infer<typeof DeviceErrorCodeSchema>;
 export interface DeviceBridge {
   ping(): Promise<boolean>;
   listDevices(): Promise<DeviceInfo[]>;
-  executeTask(deviceId: string, task: string, timeoutMs?: number, guidance?: string, sessionId?: string, maxSteps?: number, allowedActions?: string[], allowedApps?: string[]): Promise<TaskResult>;
+  executeTask(
+    deviceId: string,
+    task: string,
+    timeoutMs?: number,
+    guidance?: string,
+    sessionId?: string,
+    maxSteps?: number,
+    allowedActions?: string[],
+    allowedApps?: string[],
+    taskPolicy?: TaskPolicy,
+  ): Promise<TaskResult>;
   executeTaskAll(task: string, timeoutMs?: number): Promise<Record<string, TaskResult>>;
   executeBatch(tasks: Array<{ deviceId: string; task: string }>, timeoutMs?: number): Promise<Record<string, TaskResult>>;
+  getTaskResults(query: TaskResultQuery): Promise<CachedTaskResult[]>;
   cancelTask(deviceId: string, taskId: string): Promise<void>;
   executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs?: number): Promise<SubTaskResult>;
   resumeOrchestration(deviceId: string, params: ResumeParams): Promise<OrchestrationResult>;

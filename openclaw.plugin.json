@@ -11,8 +11,10 @@
       "device_execute_task",
       "device_execute_task_all",
       "device_execute_batch",
+      "device_get_task_results",
       "device_cancel_task",
-      "device_get_status"
+      "device_get_status",
+      "device_execute_skill"
     ]
   },
   "configSchema": {

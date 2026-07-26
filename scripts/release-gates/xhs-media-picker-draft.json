@@ -1,0 +1,60 @@
+{
+  "name": "xhs-media-picker-draft",
+  "kind": "task",
+  "iterations": 1,
+  "sampleIntervalMs": 200,
+  "forbiddenAppPrefixes": [
+    "com.android.chrome",
+    "com.mi.browser",
+    "com.tencent.mtt",
+    "com.UCMobile",
+    "org.mozilla.firefox",
+    "com.microsoft.emmx"
+  ],
+  "expectedDevice": {
+    "skillSchemaVersion": 2,
+    "skillBundleVersion": 13,
+    "skillDigest": "4139c0177ecc13ea5a570e31a97af737ac653ad67cce7a717418d53d5143fdc2",
+    "skillSyncStatus": "current"
+  },
+  "expectedRuntime": {
+    "deviceSkillLayerMode": "enabled",
+    "devicePolicyMode": "enforce"
+  },
+  "adb": {
+    "path": "/Users/zongkelong/Library/Android/sdk/platform-tools/adb",
+    "serialByDeviceId": {
+      "24094RAD4C-ea308f9d9d3467d4": "8TK7LVORDMU8PJEM",
+      "24094RAD4C-5bb6baafaa89f40d": "MVXK9T59J7BY7TL7"
+    },
+    "preTaskLaunchPackage": "com.lobster.agent",
+    "preTaskSettleMs": 500,
+    "assertions": {
+      "foregroundPackage": "com.xingin.xhs",
+      "topActivityContains": ["CapaPostNotePlatformActivity"]
+    }
+  },
+  "task": {
+    "task": "桌面端已向手机相册推送唯一测试图 tabby-media-probe-20260724.png。打开小红书发图文，从相册选择最新的彩条测试图，只选 1 张；进入正式发帖页并确认顶部只有 1 张素材缩略图后立即结束。不要填写标题或正文，不要点击最终发布按钮。",
+    "timeoutMs": 240000,
+    "maxSteps": 14,
+    "allowedActions": ["AWAKE", "CLICK", "WAIT", "BACK", "SLIDE", "COMPLETE", "ABORT", "INFO"],
+    "allowedApps": ["com.xingin.xhs"],
+    "taskPolicy": {
+      "operationClass": "content.publish",
+      "targetPackages": ["com.xingin.xhs"],
+      "allowedAppRoles": ["target_app", "gallery", "file_picker", "system_dialog", "system_settings"],
+      "allowedActions": ["AWAKE", "CLICK", "WAIT", "BACK", "SLIDE", "COMPLETE", "ABORT", "INFO"],
+      "allowedApps": ["com.xingin.xhs"],
+      "confirmationPolicy": {
+        "publish": "forbidden",
+        "payment": "forbidden"
+      }
+    }
+  },
+  "thresholds": {
+    "minSuccessRate": 1,
+    "maxIdleP95Ms": 3000,
+    "maxIdleMs": 5000
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "id": "douyin-v1",
+  "kind": "app",
+  "targetPackages": ["com.ss.android.ugc.aweme", "com.zhiliaoapp.musically"],
+  "name": "抖音专家",
+  "version": 1,
+  "priority": 10,
+  "author": "system",
+  "activation": {
+    "intents": ["app.use.douyin"],
+    "taskKeywords": ["抖音", "douyin", "tiktok"],
+    "packages": ["com.ss.android.ugc.aweme", "com.zhiliaoapp.musically"],
+    "manufacturers": ["*"],
+    "androidApiMin": 26,
+    "taskScoped": false,
+    "surfaceScoped": true
+  },
+  "capabilities": ["app.douyin"]
+}

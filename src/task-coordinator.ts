@@ -26,6 +26,9 @@ import type {
   TaskEndParams,
   MediaPushResult,
   TaskArtifact,
+  CachedTaskResult,
+  TaskPolicy,
+  DeviceInfo,
 } from './protocol.js';
 import {
   TaskResultSchema,
@@ -33,6 +36,7 @@ import {
   OrchestrationResultSchema,
   MediaPushResultSchema,
   AgentArtifactParamsSchema,
+  TaskPolicySchema,
 } from './protocol.js';
 import { randomUUID } from 'crypto';
 
@@ -41,6 +45,11 @@ const SCREENSHOT_DIR = join(homedir(), '.openclaw', 'media', 'tabby-screenshots'
 const TASK_ARTIFACT_DIR = join(SCREENSHOT_DIR, 'artifacts');
 const MAX_TASK_ARTIFACT_BYTES = 8 * 1024 * 1024;
 const MAX_TASK_ARTIFACTS = 32;
+
+/** Bounds on the completed-result cache that backs post-hoc recovery. */
+const MAX_CACHED_TASK_RESULTS = 64;
+const TASK_RESULT_TTL_MS = 30 * 60_000;
+const MAX_CLOSED_TASKS = 128;
 
 function artifactExtension(mimeType: string): string {
   if (mimeType === 'image/png') return 'png';
@@ -88,6 +97,8 @@ export interface ProgressCallback {
 
 export class TaskCoordinator {
   private pending = new Map<TaskId, PendingRequest>();
+  private activeTasks = new Map<DeviceId, TaskId>();
+  private closedTasks = new Map<TaskId, number>();
   private subTaskPending = new Map<string, {
     resolve: (value: SubTaskResult) => void;
     reject: (reason: Error) => void;
@@ -106,6 +117,11 @@ export class TaskCoordinator {
     timeout: ReturnType<typeof setTimeout>;
   }>();
   private taskArtifacts = new Map<TaskId, TaskArtifact[]>();
+  private taskResults = new Map<TaskId, CachedTaskResult>();
+  private taskCancellationSources = new Map<
+    TaskId,
+    'user_requested' | 'caller_disconnected'
+  >();
   private progressCallbacks: ProgressCallback[] = [];
   private ipcNotifier: (channel: string, data: unknown) => void;
   private wsServer: WsServer;
@@ -139,20 +155,35 @@ export class TaskCoordinator {
     maxSteps?: number,
     allowedActions?: string[],
     allowedApps?: string[],
+    taskPolicy?: TaskPolicy,
   ): Promise<TaskResult> {
     const device = this.wsServer.getRegistry().get(deviceId);
     if (!device) throw new Error(`DEVICE_NOT_FOUND: no device with id ${deviceId}`);
-    if (device.info.status === 'busy') {
+    const validatedTaskPolicy = taskPolicy
+      ? TaskPolicySchema.parse(taskPolicy)
+      : undefined;
+    const activeTaskId = this.getActiveTaskId(deviceId);
+    const isResume = guidance != null
+      && sessionId != null
+      && activeTaskId === sessionId;
+    if (!isResume && (activeTaskId || device.info.status === 'busy')) {
       throw new Error(`TASK_ALREADY_RUNNING: device ${deviceId} is busy`);
     }
 
     const taskId: TaskId = `t_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    if (!isResume) {
+      this.activeTasks.set(deviceId, taskId);
+    }
 
     this.wsServer.getRegistry().updateStatus(deviceId, {
       status: 'busy',
-      currentTaskId: taskId,
+      currentTaskId: isResume ? activeTaskId : taskId,
     });
-    this.ipcNotifier('device:status_change', { deviceId, status: 'busy', taskId });
+    this.ipcNotifier('device:status_change', {
+      deviceId,
+      status: 'busy',
+      taskId: isResume ? activeTaskId : taskId,
+    });
 
     console.log(`[tabby-control] >>> EXECUTE_TASK >>> taskId=${taskId} deviceId=${deviceId} task="${task}" timeoutMs=${timeoutMs}`);
 
@@ -164,6 +195,7 @@ export class TaskCoordinator {
     if (sessionId) params.sessionId = sessionId;
     if (allowedActions) params.allowedActions = allowedActions;
     if (allowedApps) params.allowedApps = allowedApps;
+    if (validatedTaskPolicy) params.taskPolicy = validatedTaskPolicy;
 
     const sent = this.wsServer.sendToDevice(deviceId, {
       channel: 'task',
@@ -174,10 +206,9 @@ export class TaskCoordinator {
 
     if (!sent) {
       console.log(`[tabby-control] >>> EXECUTE_TASK >>> FAILED - device offline or not found, deviceId=${deviceId}`);
-      this.wsServer.getRegistry().updateStatus(deviceId, {
-        status: 'idle',
-        currentTaskId: undefined,
-      });
+      if (!isResume) {
+        this.updateDeviceAfterTaskExit(deviceId, taskId);
+      }
       throw new Error('DEVICE_OFFLINE');
     }
 
@@ -334,33 +365,46 @@ export class TaskCoordinator {
   /**
    * Cancel a running task on a device.
    */
-  cancelTask(deviceId: string, taskId: string): boolean {
+  cancelTask(
+    deviceId: string,
+    taskId: string,
+    source: 'user_requested' | 'caller_disconnected' = 'user_requested',
+  ): void {
+    const device = this.wsServer.getRegistry().get(deviceId);
+    if (!device) {
+      throw new Error(`DEVICE_NOT_FOUND: no device with id ${deviceId}`);
+    }
+    const activeTaskId = this.getActiveTaskId(deviceId);
+    const resolvedTaskId = taskId === 'current' ? activeTaskId : taskId;
+    if (!resolvedTaskId) {
+      throw new Error(`TASK_NOT_FOUND: device ${deviceId} has no current task`);
+    }
+    if (activeTaskId && resolvedTaskId !== activeTaskId) {
+      throw new Error(
+        `TASK_NOT_FOUND: task ${resolvedTaskId} is not current task ${activeTaskId} on device ${deviceId}`,
+      );
+    }
+
     const sent = this.wsServer.sendToDevice(deviceId, {
       channel: 'task',
-      id: `cancel_${taskId}`,
+      id: `cancel_${resolvedTaskId}`,
       method: 'agent.cancel',
-      params: { taskId },
+      params: { taskId: resolvedTaskId },
     });
+    if (!sent) {
+      throw new Error(`DEVICE_OFFLINE: failed to cancel task on device ${deviceId}`);
+    }
 
-    const pending = this.pending.get(taskId as TaskId);
+    this.taskCancellationSources.set(resolvedTaskId as TaskId, source);
+    this.markTaskClosed(resolvedTaskId as TaskId);
+    const pending = this.pending.get(resolvedTaskId as TaskId);
     if (pending) {
       clearTimeout(pending.timeout);
-      this.pending.delete(taskId as TaskId);
+      this.pending.delete(resolvedTaskId as TaskId);
       pending.reject(new Error('CANCELLED'));
     }
-    this.taskArtifacts.delete(taskId as TaskId);
-
-    this.wsServer.getRegistry().updateStatus(deviceId, {
-      status: 'idle',
-      currentTaskId: undefined,
-    });
-    this.ipcNotifier('device:status_change', {
-      deviceId,
-      status: 'idle',
-      taskId: undefined,
-    });
-
-    return sent;
+    this.taskArtifacts.delete(resolvedTaskId as TaskId);
+    this.updateDeviceAfterTaskExit(deviceId, resolvedTaskId as TaskId);
   }
 
   /**
@@ -538,6 +582,8 @@ export class TaskCoordinator {
 
       if (!taskId) return;
 
+      this.markTaskClosed(taskId as TaskId);
+
       const pending = this.pending.get(taskId as TaskId);
       console.log(`[tabby-control] pending.get(${taskId}) = ${pending ? 'FOUND' : 'NOT FOUND'}`);
 
@@ -547,12 +593,42 @@ export class TaskCoordinator {
       }
 
       const parsed = TaskResultSchema.safeParse(result);
-      const validResult = parsed.success && parsed.data.taskId === taskId
+      const parsedResult = parsed.success && parsed.data.taskId === taskId
         ? parsed.data
         : null;
-      if (parsed.success && !validResult) {
+      if (parsed.success && !parsedResult) {
         console.warn(`[tabby-control] Task result id mismatch: envelope=${taskId}, result=${parsed.data.taskId}`);
       }
+
+      const cancellationSource = this.taskCancellationSources.get(taskId as TaskId);
+      this.taskCancellationSources.delete(taskId as TaskId);
+      const validResult = parsedResult?.status === 'aborted' && cancellationSource
+        ? {
+            ...parsedResult,
+            errorCode: cancellationSource === 'caller_disconnected'
+              ? 'CALLER_DISCONNECTED'
+              : 'USER_CANCELLED',
+            message: cancellationSource === 'caller_disconnected'
+              ? 'Task cancelled because the desktop/tool connection closed before completion'
+              : 'Task cancelled by user request before completion',
+          }
+        : parsedResult;
+
+      const retained = validResult ? this.taskResults.get(taskId as TaskId) : undefined;
+      if (retained) {
+        if (retained.deviceId !== deviceId) {
+          console.warn(`[tabby-control] Ignoring replayed task result from wrong device for ${taskId}`);
+          return;
+        }
+        this.wsServer.sendToDevice(deviceId, {
+          channel: 'task',
+          method: 'agent.result_ack',
+          params: { taskId },
+        });
+        console.log(`[tabby-control] Duplicate task result acknowledged: ${taskId}`);
+        return;
+      }
+
       const artifacts = this.taskArtifacts.get(taskId as TaskId) ?? [];
       this.taskArtifacts.delete(taskId as TaskId);
       const enriched = validResult
@@ -569,26 +645,92 @@ export class TaskCoordinator {
         }
       }
 
-      // Status reset + notification must run even when no pending entry exists:
-      // after an interaction_request resolves the promise early, the phone may
-      // auto-continue (its 60s guidance window expires) and still deliver the
-      // final result here — dropping it would leave the UI without an outcome.
-      this.wsServer.getRegistry().updateStatus(deviceId, {
-        status: 'idle',
-        currentTaskId: undefined,
-      });
-      this.ipcNotifier('device:status_change', {
-        deviceId,
-        status: 'idle',
-        taskId: undefined,
-      });
+      // Retain the result even when nobody was awaiting it, so an aborted or
+      // timed-out caller can still recover the work the phone actually did.
+      if (validResult) {
+        this.rememberTaskResult(taskId as TaskId, deviceId, enriched as TaskResult, !pending);
+        const structuredResult = enriched as TaskResult;
+        if (structuredResult.status === 'blocked') {
+          this.wsServer.getRegistry().updateStatus(deviceId, {
+            lastPolicyDecision: structuredResult.policyDecision ?? 'block',
+            lastPolicyCode: structuredResult.errorCode,
+            lastBlockedReason: structuredResult.blockReason ?? structuredResult.message,
+          });
+        }
+      }
+
+      // A guidance acknowledgement has its own transport task id while the
+      // original phone loop remains active. Only clear the task that actually
+      // owns the device.
+      this.updateDeviceAfterTaskExit(deviceId, taskId as TaskId);
       this.ipcNotifier('device:task_result', { deviceId, result: enriched });
+      if (validResult) {
+        this.wsServer.sendToDevice(deviceId, {
+          channel: 'task',
+          method: 'agent.result_ack',
+          params: { taskId },
+        });
+      }
       return;
     }
 
     // ── Progress ─────────────────────────────────────────────────────────────
     if (message.method === 'agent.progress') {
       const params = message.params as Record<string, unknown>;
+      const progressTaskId = params.taskId ? String(params.taskId) as TaskId : undefined;
+      const runtime = params.runtime as {
+        operationClass?: string;
+        currentAppRole?: string;
+        selectedSkills?: string[];
+        skippedSkills?: string[];
+        skillLayerMode?: string;
+        policyMode?: string;
+        policyDecision?: string;
+        policyCode?: string;
+      } | undefined;
+
+      if (progressTaskId) {
+        const device = this.wsServer.getRegistry().get(deviceId);
+        const activeTaskId = this.activeTasks.get(deviceId) ?? device?.info.currentTaskId;
+        if (this.isTaskClosed(progressTaskId)) {
+          console.warn(`[tabby-control] Ignoring progress for closed task ${progressTaskId}`);
+          return;
+        }
+        if (activeTaskId && activeTaskId !== progressTaskId) {
+          console.warn(
+            `[tabby-control] Ignoring stale progress for ${progressTaskId}; ` +
+            `active task is ${activeTaskId}`,
+          );
+          return;
+        }
+        this.activeTasks.set(deviceId, progressTaskId);
+        if (
+          device
+          && (device.info.status !== 'busy' || device.info.currentTaskId !== progressTaskId)
+        ) {
+          this.wsServer.getRegistry().updateStatus(deviceId, {
+            status: 'busy',
+            currentTaskId: progressTaskId,
+          });
+          this.ipcNotifier('device:status_change', {
+            deviceId,
+            status: 'busy',
+            taskId: progressTaskId,
+          });
+        }
+      }
+      if (runtime) {
+        this.wsServer.getRegistry().updateStatus(deviceId, {
+          currentOperationClass: runtime.operationClass,
+          currentAppRole: runtime.currentAppRole as DeviceInfo['currentAppRole'],
+          activeSkills: runtime.selectedSkills,
+          skippedSkills: runtime.skippedSkills,
+          deviceSkillLayerMode: runtime.skillLayerMode as DeviceInfo['deviceSkillLayerMode'],
+          devicePolicyMode: runtime.policyMode as DeviceInfo['devicePolicyMode'],
+          lastPolicyDecision: runtime.policyDecision as DeviceInfo['lastPolicyDecision'],
+          lastPolicyCode: runtime.policyCode,
+        });
+      }
 
       // Heartbeat: any progress means the task is alive — re-arm its idle
       // timeout so a long-but-active task (browsing, 养号) isn't killed by
@@ -627,16 +769,6 @@ export class TaskCoordinator {
           clearTimeout(pending.timeout);
           this.pending.delete(taskId as TaskId);
 
-          this.wsServer.getRegistry().updateStatus(deviceId, {
-            status: 'idle',
-            currentTaskId: undefined,
-          });
-          this.ipcNotifier('device:status_change', {
-            deviceId,
-            status: 'idle',
-            taskId: undefined,
-          });
-
           pending.resolve({
             taskId,
             success: false,
@@ -645,26 +777,6 @@ export class TaskCoordinator {
             needsInteraction: true,
             interactionMessage: interactionReq.message,
             interactionScreenshot: screenshotForIpc,
-          });
-        }
-      }
-
-      // Self-heal: the interaction_request path above marks the device idle so
-      // guidance can be dispatched. If the phone's 60s guidance window expires
-      // it auto-continues the task — progress arriving for an "idle" device
-      // means the loop is actually still running, so flip it back to busy and
-      // keep executeTask from dispatching a second task onto it.
-      if (!interactionReq && params.taskId) {
-        const device = this.wsServer.getRegistry().get(deviceId);
-        if (device && device.info.status === 'idle') {
-          this.wsServer.getRegistry().updateStatus(deviceId, {
-            status: 'busy',
-            currentTaskId: String(params.taskId) as TaskId,
-          });
-          this.ipcNotifier('device:status_change', {
-            deviceId,
-            status: 'busy',
-            taskId: params.taskId,
           });
         }
       }
@@ -687,6 +799,141 @@ export class TaskCoordinator {
 
   // ─── Internal ────────────────────────────────────────────────────────────────
 
+  private getActiveTaskId(deviceId: DeviceId): TaskId | undefined {
+    const registry = this.wsServer.getRegistry();
+    const device = registry.get(deviceId);
+    const activeTaskId = this.activeTasks.get(deviceId) ?? device?.info.currentTaskId;
+
+    // A fresh phone connection or idle heartbeat is authoritative. Drop any
+    // in-memory task left behind by a lost terminal result.
+    if (device?.info.status === 'idle') {
+      this.activeTasks.delete(deviceId);
+      if (device.info.currentTaskId) {
+        registry.updateStatus(deviceId, { currentTaskId: undefined });
+      }
+      return undefined;
+    }
+
+    return activeTaskId;
+  }
+
+  private markTaskClosed(taskId: TaskId): void {
+    this.closedTasks.delete(taskId);
+    this.closedTasks.set(taskId, Date.now());
+    this.pruneClosedTasks();
+  }
+
+  private isTaskClosed(taskId: TaskId): boolean {
+    this.pruneClosedTasks();
+    return this.closedTasks.has(taskId);
+  }
+
+  private pruneClosedTasks(): void {
+    const cutoff = Date.now() - TASK_RESULT_TTL_MS;
+    for (const [taskId, closedAt] of this.closedTasks) {
+      if (closedAt < cutoff) {
+        this.closedTasks.delete(taskId);
+        this.taskCancellationSources.delete(taskId);
+      }
+    }
+    while (this.closedTasks.size > MAX_CLOSED_TASKS) {
+      const oldest = this.closedTasks.keys().next();
+      if (oldest.done) break;
+      this.closedTasks.delete(oldest.value);
+      this.taskCancellationSources.delete(oldest.value);
+    }
+  }
+
+  private updateDeviceAfterTaskExit(deviceId: DeviceId, taskId: TaskId): void {
+    const registry = this.wsServer.getRegistry();
+    const registryTaskId = registry.get(deviceId)?.info.currentTaskId;
+    const activeTaskId = this.activeTasks.get(deviceId) ?? registryTaskId;
+
+    if (activeTaskId === taskId) {
+      this.activeTasks.delete(deviceId);
+      registry.updateStatus(deviceId, {
+        status: 'idle',
+        currentTaskId: undefined,
+      });
+      this.ipcNotifier('device:status_change', {
+        deviceId,
+        status: 'idle',
+        taskId: undefined,
+      });
+      return;
+    }
+
+    if (activeTaskId) {
+      registry.updateStatus(deviceId, {
+        status: 'busy',
+        currentTaskId: activeTaskId,
+      });
+      this.ipcNotifier('device:status_change', {
+        deviceId,
+        status: 'busy',
+        taskId: activeTaskId,
+      });
+      return;
+    }
+
+    registry.updateStatus(deviceId, {
+      status: 'idle',
+      currentTaskId: undefined,
+    });
+    this.ipcNotifier('device:status_change', {
+      deviceId,
+      status: 'idle',
+      taskId: undefined,
+    });
+  }
+
+  /** Look up a finished task's result by id. Null once it ages out. */
+  getTaskResult(taskId: string): CachedTaskResult | null {
+    this.pruneTaskResults();
+    return this.taskResults.get(taskId as TaskId) ?? null;
+  }
+
+  /**
+   * Finished task results, newest first. Filters to one device when given a
+   * `deviceId` — the usual shape of "the batch aborted, what did it get?".
+   */
+  getRecentTaskResults(deviceId?: string, limit = 10): CachedTaskResult[] {
+    this.pruneTaskResults();
+    const entries = [...this.taskResults.values()]
+      .filter(entry => deviceId == null || entry.deviceId === deviceId)
+      .sort((a, b) => b.completedAt - a.completedAt);
+    return entries.slice(0, limit);
+  }
+
+  private rememberTaskResult(
+    taskId: TaskId,
+    deviceId: string,
+    result: TaskResult,
+    orphaned: boolean,
+  ): void {
+    this.taskResults.set(taskId, { taskId, deviceId, result, completedAt: Date.now(), orphaned });
+    if (orphaned) {
+      console.warn(
+        `[tabby-control] Result for ${taskId} arrived with no waiter — cached for recovery`,
+      );
+    }
+    this.pruneTaskResults();
+  }
+
+  private pruneTaskResults(): void {
+    const cutoff = Date.now() - TASK_RESULT_TTL_MS;
+    for (const [taskId, entry] of this.taskResults) {
+      if (entry.completedAt < cutoff) this.taskResults.delete(taskId);
+    }
+    // Map iterates in insertion order, and task ids are unique, so the first
+    // key is always the oldest surviving entry.
+    while (this.taskResults.size > MAX_CACHED_TASK_RESULTS) {
+      const oldest = this.taskResults.keys().next();
+      if (oldest.done) break;
+      this.taskResults.delete(oldest.value);
+    }
+  }
+
   private waitForResult(taskId: TaskId, deviceId: string, timeoutMs: number): Promise<TaskResult> {
     return new Promise((resolve, reject) => {
       // Idle timeout, not a total wall-clock budget: a phone task can legitimately
@@ -696,10 +943,8 @@ export class TaskCoordinator {
       const onTimeout = () => {
         this.pending.delete(taskId);
         this.taskArtifacts.delete(taskId);
-        this.wsServer.getRegistry().updateStatus(deviceId, {
-          status: 'idle',
-          currentTaskId: undefined,
-        });
+        this.markTaskClosed(taskId);
+        this.updateDeviceAfterTaskExit(deviceId, taskId);
         reject(new Error(`TIMEOUT: task ${taskId} made no progress for ${timeoutMs}ms`));
       };
 

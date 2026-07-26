@@ -8,7 +8,7 @@
  * the WebSocket port is already bound by the gateway worker.
  */
 
-import type { DeviceInfo, TaskResult, SubTaskExecuteParams, SubTaskResult, OrchestrationResult, ResumeParams, TaskStartParams, TaskEndParams } from './protocol.js';
+import type { DeviceInfo, TaskResult, SubTaskExecuteParams, SubTaskResult, OrchestrationResult, ResumeParams, TaskStartParams, TaskEndParams, CachedTaskResult, TaskResultQuery, TaskPolicy } from './protocol.js';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -22,6 +22,27 @@ interface RpcResponse {
   result?: unknown;
   error?: { code: string; message: string };
 }
+
+// ─── Deadlines ────────────────────────────────────────────────────────────────
+
+/**
+ * Transport deadline for a call whose server-side deadline is *hard*: the
+ * server is guaranteed to answer within its own `timeoutMs`, so we allow that
+ * plus enough slack for dispatch and serialisation.
+ */
+const TRANSPORT_HEADROOM_MS = 30_000;
+
+/**
+ * Sentinel for "this call has no client-side wall clock".
+ *
+ * `TaskCoordinator.waitForResult` deliberately uses an *idle* timeout that
+ * every `agent.progress` heartbeat re-arms, so a healthy phone task legitimately
+ * runs far past any fixed duration. A transport wall clock here would abort
+ * tasks that are still making progress and orphan the phone, which is exactly
+ * the bug a hardcoded 320s deadline used to cause. The coordinator settles on
+ * every path, so it is the single deadline authority for agent-loop calls.
+ */
+const NO_TRANSPORT_DEADLINE = null;
 
 // ─── Bridge client ────────────────────────────────────────────────────────────
 
@@ -37,10 +58,18 @@ export class BridgeClient {
   /**
    * Perform an RPC call to the RPC server.
    * Throws on HTTP error or RPC-level error.
+   *
+   * `timeoutMs` is the transport deadline: it defaults to the client-wide
+   * fast-fail budget for control-plane calls, and is `NO_TRANSPORT_DEADLINE`
+   * for calls that drive the phone's agent loop.
    */
-  async call<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  async call<T = unknown>(
+    method: string,
+    params: Record<string, unknown> = {},
+    timeoutMs: number | null = this.requestTimeoutMs,
+  ): Promise<T> {
     const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+    const timer = timeoutMs === null ? null : setTimeout(() => controller.abort(), timeoutMs);
 
     try {
       const response = await fetch(`${this.baseUrl}/rpc`, {
@@ -61,7 +90,7 @@ export class BridgeClient {
       }
       return (parsed.result ?? null) as T;
     } finally {
-      clearTimeout(timer);
+      if (timer) clearTimeout(timer);
     }
   }
 
@@ -93,6 +122,7 @@ export class BridgeClient {
     maxSteps?: number,
     allowedActions?: string[],
     allowedApps?: string[],
+    taskPolicy?: TaskPolicy,
   ): Promise<TaskResult> {
     return this.call<TaskResult>('device_execute_task', {
       deviceId,
@@ -103,18 +133,31 @@ export class BridgeClient {
       ...(maxSteps != null ? { maxSteps } : {}),
       ...(allowedActions?.length ? { allowedActions } : {}),
       ...(allowedApps?.length ? { allowedApps } : {}),
-    });
+      ...(taskPolicy ? { taskPolicy } : {}),
+    }, NO_TRANSPORT_DEADLINE);
   }
 
   async executeTaskAll(task: string, timeoutMs = 300_000): Promise<Record<string, TaskResult>> {
-    return this.call<Record<string, TaskResult>>('device_execute_task_all', { task, timeoutMs });
+    return this.call<Record<string, TaskResult>>(
+      'device_execute_task_all',
+      { task, timeoutMs },
+      NO_TRANSPORT_DEADLINE,
+    );
   }
 
   async executeBatch(
     tasks: Array<{ deviceId: string; task: string }>,
     timeoutMs = 300_000,
   ): Promise<Record<string, TaskResult>> {
-    return this.call<Record<string, TaskResult>>('device_execute_batch', { tasks, timeoutMs });
+    return this.call<Record<string, TaskResult>>(
+      'device_execute_batch',
+      { tasks, timeoutMs },
+      NO_TRANSPORT_DEADLINE,
+    );
+  }
+
+  async getTaskResults(query: TaskResultQuery): Promise<CachedTaskResult[]> {
+    return this.call<CachedTaskResult[]>('device_get_task_results', { ...query });
   }
 
   async cancelTask(deviceId: string, taskId: string): Promise<void> {
@@ -126,11 +169,13 @@ export class BridgeClient {
   }
 
   async executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs?: number): Promise<SubTaskResult> {
+    // A subtask's server-side deadline is hard (no heartbeat re-arming), so a
+    // derived transport deadline is honest here — unlike the agent-loop calls.
     return this.call<SubTaskResult>('device_execute_subtask', {
       deviceId,
       ...params,
       timeoutMs,
-    });
+    }, (timeoutMs ?? 60_000) + TRANSPORT_HEADROOM_MS);
   }
 
   async resumeOrchestration(deviceId: string, params: ResumeParams): Promise<OrchestrationResult> {

@@ -1,0 +1,60 @@
+{
+  "name": "xhs-nurture-like-one-of-three",
+  "kind": "task",
+  "iterations": 1,
+  "requestTimeoutMs": 1200000,
+  "sampleIntervalMs": 200,
+  "forbiddenAppPrefixes": [
+    "com.android.chrome",
+    "com.mi.browser",
+    "com.tencent.mtt",
+    "com.UCMobile",
+    "org.mozilla.firefox",
+    "com.microsoft.emmx"
+  ],
+  "expectedDevice": {
+    "skillSchemaVersion": 2,
+    "skillBundleVersion": 13,
+    "skillDigest": "4139c0177ecc13ea5a570e31a97af737ac653ad67cce7a717418d53d5143fdc2",
+    "skillSyncStatus": "current"
+  },
+  "expectedRuntime": {
+    "deviceSkillLayerMode": "enabled",
+    "devicePolicyMode": "enforce"
+  },
+  "adb": {
+    "path": "/Users/zongkelong/Library/Android/sdk/platform-tools/adb",
+    "serialByDeviceId": {
+      "24094RAD4C-ea308f9d9d3467d4": "8TK7LVORDMU8PJEM",
+      "24094RAD4C-5bb6baafaa89f40d": "MVXK9T59J7BY7TL7"
+    },
+    "preTaskLaunchPackage": "com.lobster.agent",
+    "preTaskSettleMs": 500,
+    "assertions": {
+      "foregroundPackage": "com.xingin.xhs"
+    }
+  },
+  "task": {
+    "task": "进行一次小规模养号验证：打开小红书搜索“羽毛球”，完整浏览 3 篇不同且与关键词直接相关的普通笔记。每篇都必须进入后先等待 2 秒，阅读正文或媒体，慢速滑动到评论区并至少查看 3 条可见评论，再返回结果页。第 1、2 篇只浏览不互动；第 3 篇看完正文和评论后只点赞一次，并确认心形变红。不要收藏、评论、关注或发布内容。满足浏览 3 篇且仅第 3 篇点赞后，确认回到搜索结果页再结束。",
+    "timeoutMs": 600000,
+    "maxSteps": 56,
+    "allowedActions": ["AWAKE", "CLICK", "TYPE", "ENTER", "WAIT", "BACK", "SLIDE", "COMPLETE", "ABORT", "INFO"],
+    "allowedApps": ["com.xingin.xhs"],
+    "taskPolicy": {
+      "operationClass": "app.use.xhs",
+      "targetPackages": ["com.xingin.xhs"],
+      "allowedAppRoles": ["target_app", "system_dialog", "system_settings"],
+      "allowedActions": ["AWAKE", "CLICK", "TYPE", "ENTER", "WAIT", "BACK", "SLIDE", "COMPLETE", "ABORT", "INFO"],
+      "allowedApps": ["com.xingin.xhs"],
+      "confirmationPolicy": {
+        "publish": "forbidden",
+        "payment": "forbidden"
+      }
+    }
+  },
+  "thresholds": {
+    "minSuccessRate": 1,
+    "maxIdleP95Ms": 3000,
+    "maxIdleMs": 5000
+  }
+}

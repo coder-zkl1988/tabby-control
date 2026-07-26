@@ -1,0 +1,19 @@
+{
+  "id": "android-sms-verification-v1",
+  "kind": "system",
+  "targetPackages": [],
+  "name": "Android 短信验证码",
+  "version": 1,
+  "priority": 92,
+  "author": "system",
+  "activation": {
+    "intents": ["sms.verify", "account.login"],
+    "taskKeywords": ["验证码", "短信验证", "手机号登录", "自动登录"],
+    "packages": ["role:default_sms"],
+    "manufacturers": ["*"],
+    "androidApiMin": 26,
+    "taskScoped": true,
+    "surfaceScoped": true
+  },
+  "capabilities": ["sms.verification"]
+}

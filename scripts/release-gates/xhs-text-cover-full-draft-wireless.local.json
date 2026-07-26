@@ -1,0 +1,69 @@
+{
+  "name": "xhs-text-cover-full-draft-wireless",
+  "kind": "task",
+  "iterations": 1,
+  "sampleIntervalMs": 200,
+  "forbiddenAppPrefixes": [
+    "com.android.chrome",
+    "com.mi.browser",
+    "com.tencent.mtt",
+    "com.UCMobile",
+    "org.mozilla.firefox",
+    "com.microsoft.emmx"
+  ],
+  "expectedDevice": {
+    "skillSchemaVersion": 2,
+    "skillBundleVersion": 13,
+    "skillDigest": "4139c0177ecc13ea5a570e31a97af737ac653ad67cce7a717418d53d5143fdc2",
+    "skillSyncStatus": "current"
+  },
+  "expectedRuntime": {
+    "deviceSkillLayerMode": "enabled",
+    "devicePolicyMode": "enforce"
+  },
+  "expectedResult": {
+    "success": true,
+    "statuses": ["completed"],
+    "minArtifacts": 1,
+    "artifactMimeTypes": ["image/jpeg"],
+    "requireArtifactFiles": true,
+    "minArtifactBytes": 10000
+  },
+  "adb": {
+    "path": "/Users/zongkelong/Library/Android/sdk/platform-tools/adb",
+    "preTaskForceStopPackages": ["com.xingin.xhs"],
+    "serialByDeviceId": {
+      "24094RAD4C-ea308f9d9d3467d4": "192.168.50.250:36987",
+      "24094RAD4C-5bb6baafaa89f40d": "192.168.50.228:33705"
+    },
+    "preTaskLaunchPackage": "com.lobster.agent",
+    "preTaskSettleMs": 500,
+    "assertions": {
+      "foregroundPackage": "com.xingin.xhs",
+      "topActivityContains": ["CapaPostNotePlatformActivity"]
+    }
+  },
+  "task": {
+    "task": "本任务没有任何图片素材。若冷启动出现‘继续编辑图文笔记吗？’，且预览明确是彩条测试图、‘Tabby发帖链路验收’或‘Tabby 写文字链路验收’，这是验收留下的未保存测试草稿，点击弹窗右上角X丢弃；若不是这些测试内容则停止询问，不得丢弃。打开小红书底部发布入口，在半屏面板点击第三行‘写文字’，不要选择相册或相机。在文字生成图片页面只输入封面短句‘Tabby 写文字链路验收’，生成文字图片并进入正式发帖页。标题输入‘Tabby写文字发帖验收’，正文输入‘这是一条用于验证手机端Agent写文字发帖能力的草稿，不会公开发布。’，然后从当前屏幕已经可见的推荐标签中选择一个与写作或文字直接相关的话题，只点击一次并确认它已插入正文；不要为寻找固定话题反复横向滑动。确认顶部只有1张生成的文字图片、标题、正文和所选话题都可见后，执行 CAPTURE_ARTIFACT value:\"xhs-text-cover-full-draft-confirmation\"，然后立即结束。不要点击存草稿，不要点击最终发布笔记按钮。",
+    "timeoutMs": 360000,
+    "maxSteps": 26,
+    "allowedActions": ["AWAKE", "CLICK", "TYPE", "WAIT", "BACK", "SLIDE", "CAPTURE_ARTIFACT", "COMPLETE", "ABORT", "INFO"],
+    "allowedApps": ["com.xingin.xhs"],
+    "taskPolicy": {
+      "operationClass": "content.publish",
+      "targetPackages": ["com.xingin.xhs"],
+      "allowedAppRoles": ["target_app", "system_dialog", "system_settings"],
+      "allowedActions": ["AWAKE", "CLICK", "TYPE", "WAIT", "BACK", "SLIDE", "CAPTURE_ARTIFACT", "COMPLETE", "ABORT", "INFO"],
+      "allowedApps": ["com.xingin.xhs"],
+      "confirmationPolicy": {
+        "publish": "forbidden",
+        "payment": "forbidden"
+      }
+    }
+  },
+  "thresholds": {
+    "minSuccessRate": 1,
+    "maxIdleP95Ms": 3000,
+    "maxIdleMs": 5000
+  }
+}

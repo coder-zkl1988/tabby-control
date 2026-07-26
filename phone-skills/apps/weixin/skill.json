@@ -1,0 +1,19 @@
+{
+  "id": "weixin-v1",
+  "kind": "app",
+  "targetPackages": ["com.tencent.mm"],
+  "name": "微信专家",
+  "version": 1,
+  "priority": 10,
+  "author": "system",
+  "activation": {
+    "intents": ["app.use.weixin", "message.reply"],
+    "taskKeywords": ["微信", "wechat", "weixin"],
+    "packages": ["com.tencent.mm"],
+    "manufacturers": ["*"],
+    "androidApiMin": 26,
+    "taskScoped": false,
+    "surfaceScoped": true
+  },
+  "capabilities": ["app.weixin"]
+}
