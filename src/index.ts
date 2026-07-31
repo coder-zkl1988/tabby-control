@@ -204,25 +204,6 @@ export function startHttpServer(
       let body = '';
       req.on('data', chunk => { body += chunk; });
       req.on('end', async () => {
-        // Devices this request put to work. Aborting the HTTP request only
-        // tears down the client's socket — the coordinator promise and the
-        // phone keep running — so without this the device stays busy forever
-        // and its result is written into a dead socket. On a premature close
-        // we cancel what we dispatched so the phone stops and returns to idle.
-        const abortTargets = new Set<string>();
-        let settled = false;
-        res.on('close', () => {
-          if (settled) return;
-          for (const deviceId of abortTargets) {
-            try {
-              coordinator.cancelTask(deviceId, 'current', 'caller_disconnected');
-              logger.warn(`[tabby-control] client disconnected — cancelled task on ${deviceId}`);
-            } catch {
-              // Already finished, already cancelled, or device offline.
-            }
-          }
-        });
-
         try {
           const { method, params } = JSON.parse(body) as { method: string; params: Record<string, unknown> };
           let result: unknown;
@@ -234,7 +215,6 @@ export function startHttpServer(
               result = await bridge.listDevices();
               break;
             case 'device_execute_task':
-              abortTargets.add(params.deviceId as string);
               result = await coordinator.executeTask(
                 params.deviceId as string,
                 params.task as string,
@@ -248,11 +228,6 @@ export function startHttpServer(
               );
               break;
             case 'device_execute_task_all': {
-              // executeTaskAll picks its targets itself, so snapshot the same
-              // idle set here to know what an aborted request has to cancel.
-              for (const device of await bridge.listDevices()) {
-                if (device.status === 'idle') abortTargets.add(device.deviceId);
-              }
               result = Object.fromEntries(
                 await coordinator.executeTaskAll(params.task as string, params.timeoutMs as number ?? 300_000),
               );
@@ -260,7 +235,6 @@ export function startHttpServer(
             }
             case 'device_execute_batch': {
               const tasks = params.tasks as Array<{ deviceId: string; task: string }>;
-              for (const { deviceId } of tasks ?? []) abortTargets.add(deviceId);
               result = Object.fromEntries(
                 await coordinator.executeBatch(tasks, params.timeoutMs as number ?? 300_000),
               );
@@ -331,7 +305,10 @@ export function startHttpServer(
               return;
           }
 
-          settled = true;
+          if (res.destroyed || res.writableEnded) {
+            logger.warn('[tabby-control] RPC caller disconnected before response; task result remains available for recovery');
+            return;
+          }
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ result }));
         } catch (err) {
@@ -342,7 +319,10 @@ export function startHttpServer(
             : msg.includes('BUSY') ? 'TASK_ALREADY_RUNNING'
             : msg.includes('CANCELLED') ? 'CANCELLED'
             : 'INTERNAL_ERROR';
-          settled = true;
+          if (res.destroyed || res.writableEnded) {
+            logger.warn('[tabby-control] RPC caller disconnected before response; task state remains owned by the coordinator');
+            return;
+          }
           res.writeHead(200, { 'Content-Type': 'application/json' });
           res.end(JSON.stringify({ error: { code, message: msg } }));
         }

@@ -51,11 +51,13 @@ test('agent-loop RPCs outlive the transport deadline that still guards control-p
   assert.deepEqual(await client.executeTaskAll('browse 10 posts', 60_000), { ok: true });
 });
 
-test('a client that disconnects mid-batch cancels the devices it put to work', async (t) => {
+test('a client that disconnects mid-batch does not cancel phone tasks', async (t) => {
   const cancelled = [];
+  const warnings = [];
   let releaseBatch;
   const coordinator = {
-    // Never settles on its own — mimics phones that are still stepping.
+    // Stay pending until after the HTTP caller disconnects, like a phone that
+    // is still stepping through a long publish flow.
     executeBatch: () => new Promise((resolve) => { releaseBatch = resolve; }),
     cancelTask(deviceId, taskId) {
       cancelled.push({ deviceId, taskId });
@@ -66,12 +68,12 @@ test('a client that disconnects mid-batch cancels the devices it put to work', a
     coordinator,
     { async listDevices() { return []; } },
     () => {},
-    silentLogger,
+    { ...silentLogger, warn(message) { warnings.push(message); } },
     () => {},
     () => {},
   );
   t.after(() => {
-    releaseBatch?.({});
+    releaseBatch?.(new Map());
     return new Promise((resolve) => server.close(resolve));
   });
   await once(server, 'listening');
@@ -98,13 +100,16 @@ test('a client that disconnects mid-batch cancels the devices it put to work', a
   assert.match(String(await observed), /abort/i);
   await new Promise((resolve) => setTimeout(resolve, 50));
 
-  assert.deepEqual(
-    cancelled.sort((a, b) => a.deviceId.localeCompare(b.deviceId)),
-    [
-      { deviceId: 'phone-1', taskId: 'current' },
-      { deviceId: 'phone-2', taskId: 'current' },
-    ],
-  );
+  assert.deepEqual(cancelled, []);
+
+  releaseBatch(new Map([
+    ['phone-1', { taskId: 't_1', success: true, message: 'done' }],
+    ['phone-2', { taskId: 't_2', success: true, message: 'done' }],
+  ]));
+  await new Promise((resolve) => setTimeout(resolve, 50));
+
+  assert.deepEqual(cancelled, []);
+  assert.ok(warnings.some((message) => message.includes('available for recovery')));
 });
 
 test('a completed request does not cancel the devices it dispatched', async (t) => {

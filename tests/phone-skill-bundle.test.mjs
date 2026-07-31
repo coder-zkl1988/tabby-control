@@ -20,7 +20,7 @@ test('generated phone skill bundle contains all three layers', async () => {
   const bundle = await readJson('generated/phone-skills.bundle.json');
   const skills = manifest.skills;
 
-  assert.equal(manifest.bundleVersion, 13);
+  assert.equal(manifest.bundleVersion, 14);
   assert.deepEqual(
     [...new Set(skills.map((skill) => skill.kind))].sort(),
     ['app', 'oem', 'system'],
@@ -76,10 +76,18 @@ test('XHS declares system capability dependencies without embedding OEM install 
     'utf8',
   );
   const loginSubskill = xhs.subskills.find((item) => item.id === 'login');
+  const postSubskill = xhs.subskills.find((item) => item.id === 'post');
+  const competingPriorities = xhs.subskills
+    .filter((item) => item.id !== 'post')
+    .map((item) => item.priority);
 
   assert.equal(xhs.kind, 'app');
   assert.ok(loginSubskill.requiresCapabilities.includes('app.install.official_store'));
   assert.ok(loginSubskill.requiresCapabilities.includes('sms.verification'));
+  assert.ok(
+    postSubskill.priority > Math.max(...competingPriorities),
+    'publish instructions must be loaded before lower-priority XHS subskills exhaust the phone prompt budget',
+  );
   assert.doesNotMatch(instructions, /com\.xiaomi\.market|应用宝|浏览器下载 APK/i);
   assert.doesNotMatch(login, /com\.xiaomi\.market|应用宝|浏览器下载 APK/i);
   assert.match(instructions, /顶部“发现”被选中.*已经位于底部首页/s);

@@ -3,7 +3,7 @@
   "kind": "app",
   "targetPackages": ["com.xingin.xhs", "com.xingin.xhs.international"],
   "name": "小红书专家",
-  "version": 28,
+  "version": 29,
   "priority": 10,
   "author": "system",
   "activation": {
@@ -72,7 +72,7 @@
       "name": "发布笔记",
       "file": "references/post.md",
       "keywords": ["发笔记", "发布", "写笔记", "发帖子", "发一条", "写一条", "图文", "发小红书", "纯文字", "写文字", "无图", "没有图片", "文字图片", "生成封面"],
-      "priority": 15,
+      "priority": 40,
       "requiresCapabilities": ["text.input", "media.picker"]
     },
     {
