@@ -1,7 +1,7 @@
 {
   "$schema": "./schema/manifest.schema.json",
   "schemaVersion": 2,
-  "bundleVersion": 14,
+  "bundleVersion": 16,
   "minAppVersion": "1.0.15",
   "skills": [
     {
@@ -47,6 +47,10 @@
     {
       "id": "weixin-v1",
       "dir": "apps/weixin"
+    },
+    {
+      "id": "wecom-v1",
+      "dir": "apps/wecom"
     },
     {
       "id": "amap-v1",

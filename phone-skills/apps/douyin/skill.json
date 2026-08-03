@@ -3,17 +3,78 @@
   "kind": "app",
   "targetPackages": ["com.ss.android.ugc.aweme", "com.zhiliaoapp.musically"],
   "name": "抖音专家",
-  "version": 1,
+  "version": 2,
   "priority": 10,
   "author": "system",
   "activation": {
-    "intents": ["app.use.douyin"],
-    "taskKeywords": ["抖音", "douyin", "tiktok"],
+    "intents": ["app.use.douyin", "content.search", "content.publish", "message.reply"],
+    "taskKeywords": ["抖音", "douyin", "tiktok", "短视频", "刷视频", "直播", "抖音商城", "团购", "发抖音"],
     "packages": ["com.ss.android.ugc.aweme", "com.zhiliaoapp.musically"],
     "manufacturers": ["*"],
     "androidApiMin": 26,
     "taskScoped": false,
     "surfaceScoped": true
   },
-  "capabilities": ["app.douyin"]
+  "capabilities": ["app.douyin"],
+  "subskills": [
+    {
+      "id": "publish",
+      "name": "拍摄与发布",
+      "file": "references/publish.md",
+      "keywords": ["发布", "发抖音", "发视频", "发作品", "上传视频", "发图文", "发照片", "拍视频", "拍摄", "文字作品", "创作灵感"],
+      "priority": 30,
+      "requiresCapabilities": ["text.input", "media.picker"]
+    },
+    {
+      "id": "commerce",
+      "name": "商城与团购",
+      "file": "references/commerce.md",
+      "keywords": ["商城", "抖音商城", "团购", "商品", "购物", "购物车", "订单", "优惠券", "客服", "退款", "售后", "店铺"],
+      "priority": 28
+    },
+    {
+      "id": "live",
+      "name": "直播浏览",
+      "file": "references/live.md",
+      "keywords": ["直播", "直播间", "主播", "看直播", "直播广场", "开直播", "送礼物", "直播购物"],
+      "priority": 27
+    },
+    {
+      "id": "message",
+      "name": "消息与回复",
+      "file": "references/message.md",
+      "keywords": ["消息", "私信", "聊天", "回消息", "回复消息", "回复评论", "评论和@", "群聊", "通知"],
+      "priority": 25,
+      "requiresCapabilities": ["text.input"]
+    },
+    {
+      "id": "profile",
+      "name": "我与账号内容",
+      "file": "references/profile.md",
+      "keywords": ["我的主页", "我tab", "个人主页", "编辑主页", "编辑资料", "作品", "私密作品", "日常", "推荐", "收藏", "喜欢", "观看历史", "创作者中心", "我的钱包", "删除作品"],
+      "priority": 24
+    },
+    {
+      "id": "search",
+      "name": "搜索与筛选",
+      "file": "references/search.md",
+      "keywords": ["搜索", "搜", "查找", "找视频", "找用户", "找商品", "找店铺", "关键词", "热榜", "排行榜", "最新视频"],
+      "priority": 22,
+      "requiresCapabilities": ["text.input"]
+    },
+    {
+      "id": "interact",
+      "name": "互动操作",
+      "file": "references/interact.md",
+      "keywords": ["点赞", "取消点赞", "收藏", "取消收藏", "评论", "回复", "关注", "取消关注", "分享", "转发", "推荐", "养号"],
+      "priority": 20
+    },
+    {
+      "id": "browse",
+      "name": "浏览推荐视频",
+      "file": "references/browse.md",
+      "keywords": ["浏览", "看看", "刷", "刷视频", "推荐", "首页", "短视频", "下一个视频", "随便看看"],
+      "priority": 10
+    }
+  ]
 }

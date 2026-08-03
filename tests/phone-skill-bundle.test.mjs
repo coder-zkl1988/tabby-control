@@ -20,7 +20,7 @@ test('generated phone skill bundle contains all three layers', async () => {
   const bundle = await readJson('generated/phone-skills.bundle.json');
   const skills = manifest.skills;
 
-  assert.equal(manifest.bundleVersion, 14);
+  assert.equal(manifest.bundleVersion, 16);
   assert.deepEqual(
     [...new Set(skills.map((skill) => skill.kind))].sort(),
     ['app', 'oem', 'system'],
@@ -94,6 +94,70 @@ test('XHS declares system capability dependencies without embedding OEM install 
   assert.match(instructions, /不要重复点击“首页”/);
   assert.match(browse, /底部导航即使隐约可见也可能只是下层页面/);
   assert.match(browse, /只要求“打开\/确认首页”.*立即 `COMPLETE`/s);
+});
+
+test('Douyin v2 captures verified navigation and high-risk operation boundaries', async () => {
+  const douyin = await readJson('phone-skills/apps/douyin/skill.json');
+  const instructions = await readFile(
+    new URL('phone-skills/apps/douyin/instructions.md', ROOT),
+    'utf8',
+  );
+  const search = await readFile(
+    new URL('phone-skills/apps/douyin/references/search.md', ROOT),
+    'utf8',
+  );
+  const publish = await readFile(
+    new URL('phone-skills/apps/douyin/references/publish.md', ROOT),
+    'utf8',
+  );
+
+  assert.equal(douyin.version, 2);
+  assert.deepEqual(
+    douyin.subskills.map(({ id }) => id).sort(),
+    ['browse', 'commerce', 'interact', 'live', 'message', 'profile', 'publish', 'search'],
+  );
+  assert.match(instructions, /点赞、评论、收藏、分享通常在\*\*右侧竖排\*\*/);
+  assert.match(instructions, /默认只读/);
+  assert.match(search, /综合[\s\S]*商品[\s\S]*用户[\s\S]*店铺[\s\S]*视频[\s\S]*图文/);
+  assert.match(publish, /分段拍 \/ 照片 \/ 视频/);
+  assert.match(publish, /最终“发布”按钮前[\s\S]*确认/);
+});
+
+test('WeCom v1 covers verified work modules and commit boundaries', async () => {
+  const wecom = await readJson('phone-skills/apps/wecom/skill.json');
+  const instructions = await readFile(
+    new URL('phone-skills/apps/wecom/instructions.md', ROOT),
+    'utf8',
+  );
+  const approvalReport = await readFile(
+    new URL('phone-skills/apps/wecom/references/approval-report.md', ROOT),
+    'utf8',
+  );
+  const scheduleMeeting = await readFile(
+    new URL('phone-skills/apps/wecom/references/schedule-meeting.md', ROOT),
+    'utf8',
+  );
+
+  assert.equal(wecom.version, 1);
+  assert.deepEqual(
+    wecom.subskills.map(({ id }) => id).sort(),
+    [
+      'approval-report',
+      'attendance',
+      'contacts',
+      'customer',
+      'docs-mail',
+      'message',
+      'schedule-meeting',
+      'search',
+      'workbench-account',
+    ],
+  );
+  assert.match(instructions, /消息 \/ 邮件 \/ 文档 \/ 工作台 \/ 通讯录/);
+  assert.match(instructions, /默认只读/);
+  assert.match(instructions, /发送 \/ 保存 \/ 提交 \/ 打卡 \/ 确认添加 \/ 发起会议/);
+  assert.match(approvalReport, /假勤[\s\S]*财务[\s\S]*行政[\s\S]*人事/);
+  assert.match(scheduleMeeting, /智能纪要[\s\S]*知情/);
 });
 
 test('every generated subskill fits the Android runtime prompt budget', async () => {

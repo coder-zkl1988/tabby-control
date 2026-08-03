@@ -1,9 +1,9 @@
 {
   "schemaVersion": 2,
-  "bundleVersion": 14,
+  "bundleVersion": 16,
   "minAppVersion": "1.0.15",
   "digestAlgorithm": "SHA-256",
-  "digest": "70b459df41db29df67db28cbc99387ee294fb5d3c03edd33ac56ee1c96a0b497",
+  "digest": "d178ea322788256ab7b61c0ce331ae3f9416370c77f26475d18a4338dfcbc396",
   "skills": [
     {
       "id": "android-core-v1",
@@ -65,7 +65,7 @@
     {
       "id": "douyin-v1",
       "kind": "app",
-      "version": 1,
+      "version": 2,
       "targetPackages": [
         "com.ss.android.ugc.aweme",
         "com.zhiliaoapp.musically"
@@ -77,6 +77,14 @@
       "version": 1,
       "targetPackages": [
         "com.tencent.mm"
+      ]
+    },
+    {
+      "id": "wecom-v1",
+      "kind": "app",
+      "version": 1,
+      "targetPackages": [
+        "com.tencent.wework"
       ]
     },
     {

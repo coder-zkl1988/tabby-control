@@ -1,0 +1,90 @@
+{
+  "id": "wecom-v1",
+  "kind": "app",
+  "targetPackages": ["com.tencent.wework"],
+  "name": "企业微信专家",
+  "version": 1,
+  "priority": 10,
+  "author": "system",
+  "activation": {
+    "intents": ["app.use.wecom", "message.reply", "content.search", "document.edit", "workflow.submit", "meeting.schedule"],
+    "taskKeywords": ["企业微信", "企微", "wecom", "wework", "工作群", "客户联系", "客户群", "打卡", "审批", "汇报", "企业文档", "企业邮箱", "日程", "会议"],
+    "packages": ["com.tencent.wework"],
+    "manufacturers": ["*"],
+    "androidApiMin": 26,
+    "taskScoped": false,
+    "surfaceScoped": true
+  },
+  "capabilities": ["app.wecom"],
+  "subskills": [
+    {
+      "id": "message",
+      "name": "消息与群聊",
+      "file": "references/message.md",
+      "keywords": ["消息", "聊天", "私聊", "群聊", "工作群", "回复", "发消息", "发文件", "转发", "发起群聊", "智能总结", "面聊"],
+      "priority": 40,
+      "requiresCapabilities": ["text.input", "media.picker"]
+    },
+    {
+      "id": "customer",
+      "name": "客户联系与运营",
+      "file": "references/customer.md",
+      "keywords": ["客户联系", "我的客户", "添加客户", "客户群", "客户朋友圈", "微信客服", "获客助手", "群发助手", "快捷回复", "商品图册", "下班后回复", "对外收款"],
+      "priority": 38,
+      "requiresCapabilities": ["text.input", "media.picker"]
+    },
+    {
+      "id": "attendance",
+      "name": "打卡与考勤",
+      "file": "references/attendance.md",
+      "keywords": ["打卡", "上班打卡", "下班打卡", "外出打卡", "考勤", "请假", "出差", "外出", "加班", "考勤统计", "考勤机"],
+      "priority": 36
+    },
+    {
+      "id": "approval-report",
+      "name": "审批与汇报",
+      "file": "references/approval-report.md",
+      "keywords": ["审批", "发起申请", "我审批的", "已提交", "报销", "付款", "费用", "采购", "合同审批", "用章", "用车", "日报", "周报", "月报", "汇报", "销售业绩", "拜访记录"],
+      "priority": 34,
+      "requiresCapabilities": ["text.input", "media.picker"]
+    },
+    {
+      "id": "schedule-meeting",
+      "name": "日程与会议",
+      "file": "references/schedule-meeting.md",
+      "keywords": ["日程", "新建日程", "会议", "快速会议", "预定会议", "加入会议", "会议室", "参会人", "智能纪要", "预定会议室"],
+      "priority": 32,
+      "requiresCapabilities": ["text.input", "media.picker"]
+    },
+    {
+      "id": "docs-mail",
+      "name": "文档与邮件",
+      "file": "references/docs-mail.md",
+      "keywords": ["文档", "智能文档", "智能表格", "表格", "收集表", "微盘", "邮件", "邮箱", "工作邮箱", "发邮件", "共享文档", "导入本地文档"],
+      "priority": 30,
+      "requiresCapabilities": ["text.input", "media.picker"]
+    },
+    {
+      "id": "contacts",
+      "name": "通讯录与成员",
+      "file": "references/contacts.md",
+      "keywords": ["通讯录", "企业通讯录", "联系人", "成员", "同事", "添加成员", "可能的同事", "智能机器人", "企业名片", "我的名片"],
+      "priority": 28
+    },
+    {
+      "id": "search",
+      "name": "全局搜索",
+      "file": "references/search.md",
+      "keywords": ["搜索", "查找", "搜联系人", "搜群聊", "搜面聊", "搜聊天记录", "搜邮件", "搜索模板", "搜索文档", "搜索应用"],
+      "priority": 26,
+      "requiresCapabilities": ["text.input"]
+    },
+    {
+      "id": "workbench-account",
+      "name": "工作台与账号企业",
+      "file": "references/workbench-account.md",
+      "keywords": ["工作台", "管理应用", "内部管理", "效率工具", "上下游", "小程序", "账号", "切换企业", "多设备登录", "创建企业", "加入企业", "设置", "高级功能"],
+      "priority": 20
+    }
+  ]
+}
