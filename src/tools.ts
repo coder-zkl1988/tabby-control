@@ -59,6 +59,9 @@ function formatTaskResult(result: TaskResult, deviceId: string): string {
     sections.push(`- task: the original task description`);
     sections.push(`- sessionId: "${result.taskId}"`);
     sections.push(`- guidance: your decision (e.g., "点击第一个选项", "滑动到底部查看更多")`);
+    sections.push(`\nThat resume call stays open while the device keeps working and returns the`);
+    sections.push(`task's REAL final result (or its next question). Respond promptly: the device`);
+    sections.push(`only waits ~60s for guidance before continuing on its own judgement.`);
     if (result.interactionScreenshot) {
       sections.push(`\n📸 Current screen: ${result.interactionScreenshot}`);
     }

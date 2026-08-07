@@ -228,7 +228,7 @@ test('interaction keeps the original task busy and cancellable', async () => {
   }
 });
 
-test('guidance acknowledgement preserves the paused task identity', async () => {
+test('guidance resume awaits the original task result, not the transport ack', async () => {
   const { coordinator, device, sent } = createHarness();
   const originalPromise = coordinator.executeTask(DEVICE_ID, 'task needing input', 1_000);
   const originalTaskId = executeMessage(sent).params.taskId;
@@ -241,7 +241,8 @@ test('guidance acknowledgement preserves the paused task identity', async () => 
       interaction_request: { message: 'Need a phone number' },
     },
   });
-  await originalPromise;
+  const interaction = await originalPromise;
+  assert.equal(interaction.needsInteraction, true);
 
   const resumePromise = coordinator.executeTask(
     DEVICE_ID,
@@ -250,7 +251,12 @@ test('guidance acknowledgement preserves the paused task identity', async () => 
     'Use 18500000000',
     originalTaskId,
   );
+  let resumeSettled = false;
+  resumePromise.then(() => { resumeSettled = true; }, () => { resumeSettled = true; });
   const resumeTaskId = executeMessage(sent, 1).params.taskId;
+
+  // The phone's transport-level "guidance received" reply must NOT settle the
+  // resume call — it is acked back to the phone and otherwise suppressed.
   coordinator.handleTaskMessage(DEVICE_ID, {
     id: `resp_${resumeTaskId}`,
     result: {
@@ -261,14 +267,112 @@ test('guidance acknowledgement preserves the paused task identity', async () => 
       totalSteps: 0,
     },
   });
-  await resumePromise;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(resumeSettled, false);
+  const transportAck = sent
+    .filter(({ message }) => message.method === 'agent.result_ack')
+    .at(-1);
+  assert.equal(transportAck.message.params.taskId, resumeTaskId);
+  assert.equal(device.info.status, 'busy');
+  assert.equal(device.info.currentTaskId, originalTaskId);
 
-  try {
-    assert.equal(device.info.status, 'busy');
-    assert.equal(device.info.currentTaskId, originalTaskId);
-  } finally {
-    coordinator.cancelTask(DEVICE_ID, originalTaskId);
-  }
+  // The ORIGINAL task's terminal result is what resolves the resume call.
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${originalTaskId}`,
+    result: {
+      taskId: originalTaskId,
+      success: true,
+      message: '任务完成：已输入 18500000000 并提交',
+      status: 'completed',
+      totalSteps: 7,
+    },
+  });
+  const finalResult = await resumePromise;
+  assert.equal(finalResult.message, '任务完成：已输入 18500000000 并提交');
+  assert.equal(finalResult.totalSteps, 7);
+  assert.equal(device.info.status, 'idle');
+});
+
+test('late guidance for a finished task returns the retained result instead of re-running', async () => {
+  const { coordinator, sent } = createHarness();
+  const originalPromise = coordinator.executeTask(DEVICE_ID, 'task needing input', 1_000);
+  const originalTaskId = executeMessage(sent).params.taskId;
+
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    method: 'agent.progress',
+    params: {
+      taskId: originalTaskId,
+      step: 1,
+      interaction_request: { message: 'Which entry?' },
+    },
+  });
+  await originalPromise;
+
+  // The phone's 60s window expires and the loop finishes on its own; its
+  // result arrives with no waiter and is retained for recovery.
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${originalTaskId}`,
+    result: {
+      taskId: originalTaskId,
+      success: true,
+      message: '自行完成：没有新消息',
+      status: 'completed',
+      totalSteps: 5,
+    },
+  });
+
+  const executesBefore = sent.filter(({ message }) => message.method === 'agent.execute').length;
+  const lateResult = await coordinator.executeTask(
+    DEVICE_ID,
+    'task needing input',
+    1_000,
+    '选第一个入口',
+    originalTaskId,
+  );
+  const executesAfter = sent.filter(({ message }) => message.method === 'agent.execute').length;
+
+  assert.equal(executesAfter, executesBefore);
+  assert.match(lateResult.message, /NOT applied/);
+  assert.match(lateResult.message, /自行完成：没有新消息/);
+  assert.equal(lateResult.totalSteps, 5);
+});
+
+test('a second resume while one is in flight is rejected', async () => {
+  const { coordinator, sent } = createHarness();
+  const originalPromise = coordinator.executeTask(DEVICE_ID, 'task needing input', 1_000);
+  const originalTaskId = executeMessage(sent).params.taskId;
+
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    method: 'agent.progress',
+    params: {
+      taskId: originalTaskId,
+      step: 1,
+      interaction_request: { message: 'Q' },
+    },
+  });
+  await originalPromise;
+
+  const resume1 = coordinator.executeTask(
+    DEVICE_ID, 'task needing input', 1_000, 'A', originalTaskId,
+  );
+  const observed1 = resume1.catch((error) => error);
+
+  await assert.rejects(
+    coordinator.executeTask(DEVICE_ID, 'task needing input', 1_000, 'B', originalTaskId),
+    /RESUME_IN_FLIGHT/,
+  );
+
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${originalTaskId}`,
+    result: {
+      taskId: originalTaskId,
+      success: true,
+      message: 'done',
+      status: 'completed',
+      totalSteps: 2,
+    },
+  });
+  assert.equal((await observed1).message, 'done');
 });
 
 test('authoritative idle reconnect drops stale tracking without clearing a newer task', async () => {

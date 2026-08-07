@@ -122,6 +122,13 @@ export class TaskCoordinator {
     TaskId,
     'user_requested' | 'caller_disconnected'
   >();
+  /**
+   * Transport task id of a dispatched guidance resume → the original task it
+   * carries guidance for. The phone replies to the transport id with a bare
+   * "guidance received" acknowledgement; that reply must be suppressed (it is
+   * NOT a task result) while the caller keeps awaiting the ORIGINAL task.
+   */
+  private guidanceAckIds = new Map<TaskId, TaskId>();
   private progressCallbacks: ProgressCallback[] = [];
   private ipcNotifier: (channel: string, data: unknown) => void;
   private wsServer: WsServer;
@@ -166,8 +173,32 @@ export class TaskCoordinator {
     const isResume = guidance != null
       && sessionId != null
       && activeTaskId === sessionId;
+    if (!isResume && guidance != null && sessionId != null) {
+      // Guidance arrived after the original task already ended on its own
+      // (e.g. the phone's 60s interaction window expired and the loop ran to
+      // completion). Re-running the whole task blind would repeat minutes of
+      // work — return the task's actual outcome instead, clearly labelled.
+      const retained = this.taskResults.get(sessionId as TaskId);
+      if (retained) {
+        console.log(
+          `[tabby-control] Guidance for finished task ${sessionId} — returning retained result instead of re-running`,
+        );
+        return {
+          ...retained.result,
+          message: '[Guidance arrived after the task had already finished on its own; '
+            + 'it was NOT applied. Below is the task\'s actual final result.]\n'
+            + (retained.result.message ?? ''),
+        };
+      }
+    }
     if (!isResume && (activeTaskId || device.info.status === 'busy')) {
       throw new Error(`TASK_ALREADY_RUNNING: device ${deviceId} is busy`);
+    }
+    if (isResume && this.pending.has(sessionId as TaskId)) {
+      throw new Error(
+        `RESUME_IN_FLIGHT: a previous guidance call is still awaiting task ${sessionId}; `
+        + 'wait for it to return instead of sending another',
+      );
     }
 
     const taskId: TaskId = `t_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
@@ -185,7 +216,11 @@ export class TaskCoordinator {
       taskId: isResume ? activeTaskId : taskId,
     });
 
-    console.log(`[tabby-control] >>> EXECUTE_TASK >>> taskId=${taskId} deviceId=${deviceId} task="${task}" timeoutMs=${timeoutMs}`);
+    console.log(
+      `[tabby-control] >>> EXECUTE_TASK >>> taskId=${taskId}`
+      + `${isResume ? ` (guidance resume of ${sessionId})` : ''}`
+      + ` deviceId=${deviceId} task="${task}" timeoutMs=${timeoutMs}`,
+    );
 
     const params: Record<string, unknown> = {
       taskId, task, mode: 'autonomous' as const,
@@ -210,6 +245,22 @@ export class TaskCoordinator {
         this.updateDeviceAfterTaskExit(deviceId, taskId);
       }
       throw new Error('DEVICE_OFFLINE');
+    }
+
+    if (isResume) {
+      // The transport task only ferries the guidance; the phone answers it with
+      // a bare acknowledgement (suppressed in handleTaskMessage). What the
+      // caller actually cares about is the ORIGINAL task, so await that id:
+      // its progress heartbeats re-arm this timer, a second INFO resolves it
+      // with needsInteraction again, and its terminal result resolves it with
+      // the real outcome — instead of the misleading "completed / 0 steps" ack.
+      this.guidanceAckIds.set(taskId, sessionId as TaskId);
+      while (this.guidanceAckIds.size > 64) {
+        const oldest = this.guidanceAckIds.keys().next();
+        if (oldest.done) break;
+        this.guidanceAckIds.delete(oldest.value);
+      }
+      return this.waitForResult(sessionId as TaskId, deviceId, timeoutMs);
     }
 
     return this.waitForResult(taskId, deviceId, timeoutMs);
@@ -581,6 +632,23 @@ export class TaskCoordinator {
       console.log(`[tabby-control] RESULT: rawId=${rawId}, taskId=${taskId}, pendingKeys=${[...this.pending.keys()].join(',')}`);
 
       if (!taskId) return;
+
+      const guidanceAckFor = this.guidanceAckIds.get(taskId as TaskId);
+      if (guidanceAckFor) {
+        // Transport-level acknowledgement of a delivered guidance resume — not
+        // a real task result. Ack it so the phone's persistent result store
+        // stops re-sending it, and keep the caller awaiting the original task.
+        this.guidanceAckIds.delete(taskId as TaskId);
+        this.wsServer.sendToDevice(deviceId, {
+          channel: 'task',
+          method: 'agent.result_ack',
+          params: { taskId },
+        });
+        console.log(
+          `[tabby-control] Guidance delivered for ${guidanceAckFor} (transport ${taskId}); original task still running`,
+        );
+        return;
+      }
 
       this.markTaskClosed(taskId as TaskId);
 
