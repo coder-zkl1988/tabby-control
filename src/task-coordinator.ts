@@ -29,6 +29,7 @@ import type {
   CachedTaskResult,
   TaskPolicy,
   DeviceInfo,
+  PhoneActionVocabulary,
 } from './protocol.js';
 import {
   TaskResultSchema,
@@ -37,6 +38,7 @@ import {
   MediaPushResultSchema,
   AgentArtifactParamsSchema,
   TaskPolicySchema,
+  normalizePhoneAction,
 } from './protocol.js';
 import { randomUUID } from 'crypto';
 
@@ -50,6 +52,52 @@ const MAX_TASK_ARTIFACTS = 32;
 const MAX_CACHED_TASK_RESULTS = 64;
 const TASK_RESULT_TTL_MS = 30 * 60_000;
 const MAX_CLOSED_TASKS = 128;
+
+/**
+ * Control-plane actions the phone agent must always be able to emit.
+ *
+ * An `allowedActions` whitelist exists to narrow *external effects* — clicking,
+ * typing, launching apps. Blocking a terminal or navigation action prevents no
+ * effect at all; it only strands the agent, which can then neither finish, back
+ * out of a page, nor report why it stopped. The device answers
+ * `POLICY_ACTION_NOT_ALLOWED` and the task dies before its first real step.
+ *
+ * The phone keeps its own mandatory set (`TaskPolicyResolver.mandatorySafeActions`
+ * in the Tabby Agent app). This list stays deliberately independent of it: the
+ * two ship on separate release cycles, so a phone running an older build must
+ * still be protected from a whitelist that would strand it. Unlike the action
+ * vocabulary — a fact about the phone, and therefore reported by it — which
+ * actions are safe to force open is a decision this side is entitled to make.
+ */
+const ALWAYS_ALLOWED_ACTIONS = ['COMPLETE', 'ABORT', 'CALL_USER', 'INFO', 'BACK', 'WAIT'];
+
+/**
+ * Normalise a caller's whitelist to the target phone's canonical action names,
+ * reject names that phone would not recognise, and append the control actions
+ * the caller forgot.
+ *
+ * Validation is skipped for a phone that reported no vocabulary. Substituting a
+ * local table there would reintroduce the drift this reporting removes, and a
+ * stale table rejecting a legitimate action is worse than not checking.
+ */
+function resolveAllowedActions(
+  allowed: string[],
+  vocabulary: PhoneActionVocabulary | undefined,
+): string[] {
+  const normalized = allowed.map((action) => normalizePhoneAction(action, vocabulary));
+  if (vocabulary) {
+    const unknown = normalized.filter((action) => !vocabulary.actions.has(action));
+    if (unknown.length) {
+      throw new Error(
+        `UNKNOWN_PHONE_ACTION: ${unknown.join(', ')} — this device would ignore `
+        + `${unknown.length > 1 ? 'them' : 'it'}, leaving a narrower whitelist than intended. `
+        + `It supports: ${[...vocabulary.actions].join(', ')}.`,
+      );
+    }
+  }
+  const present = new Set(normalized);
+  return [...normalized, ...ALWAYS_ALLOWED_ACTIONS.filter((action) => !present.has(action))];
+}
 
 function artifactExtension(mimeType: string): string {
   if (mimeType === 'image/png') return 'png';
@@ -99,6 +147,18 @@ export class TaskCoordinator {
   private pending = new Map<TaskId, PendingRequest>();
   private activeTasks = new Map<DeviceId, TaskId>();
   private closedTasks = new Map<TaskId, number>();
+  /**
+   * Task a phone is still running after this side stopped tracking it.
+   *
+   * An inactivity timeout ends the caller's wait but not the phone's work — by
+   * design, so a long task survives a disconnect. That leaves the device
+   * genuinely busy (it reports so itself) while `activeTasks` is empty, and a
+   * `cancelTask(id, 'current')` then finds nothing to cancel: the device can
+   * neither accept a new task nor be stopped without its raw task id, which the
+   * caller no longer has. The phone keeps naming the task in every
+   * `agent.progress`, so record that and let 'current' resolve to it.
+   */
+  private untrackedRunningTasks = new Map<DeviceId, TaskId>();
   private subTaskPending = new Map<string, {
     resolve: (value: SubTaskResult) => void;
     reject: (reason: Error) => void;
@@ -166,9 +226,25 @@ export class TaskCoordinator {
   ): Promise<TaskResult> {
     const device = this.wsServer.getRegistry().get(deviceId);
     if (!device) throw new Error(`DEVICE_NOT_FOUND: no device with id ${deviceId}`);
+    // Resolve every caller-supplied whitelist up front: these throw on an
+    // unrecognised action or policy key, and must do so before the device is
+    // marked busy, or a rejected call would leave it pinned to a task that was
+    // never dispatched.
     const validatedTaskPolicy = taskPolicy
       ? TaskPolicySchema.parse(taskPolicy)
       : undefined;
+    const resolvedAllowedActions = allowedActions
+      ? resolveAllowedActions(allowedActions, device.actionVocabulary)
+      : undefined;
+    const resolvedTaskPolicy = validatedTaskPolicy?.allowedActions
+      ? {
+        ...validatedTaskPolicy,
+        allowedActions: resolveAllowedActions(
+          validatedTaskPolicy.allowedActions,
+          device.actionVocabulary,
+        ),
+      }
+      : validatedTaskPolicy;
     const activeTaskId = this.getActiveTaskId(deviceId);
     const isResume = guidance != null
       && sessionId != null
@@ -228,9 +304,9 @@ export class TaskCoordinator {
     if (maxSteps) params.maxSteps = maxSteps;
     if (guidance) params.guidance = guidance;
     if (sessionId) params.sessionId = sessionId;
-    if (allowedActions) params.allowedActions = allowedActions;
+    if (resolvedAllowedActions) params.allowedActions = resolvedAllowedActions;
     if (allowedApps) params.allowedApps = allowedApps;
-    if (validatedTaskPolicy) params.taskPolicy = validatedTaskPolicy;
+    if (resolvedTaskPolicy) params.taskPolicy = resolvedTaskPolicy;
 
     const sent = this.wsServer.sendToDevice(deviceId, {
       channel: 'task',
@@ -426,7 +502,12 @@ export class TaskCoordinator {
       throw new Error(`DEVICE_NOT_FOUND: no device with id ${deviceId}`);
     }
     const activeTaskId = this.getActiveTaskId(deviceId);
-    const resolvedTaskId = taskId === 'current' ? activeTaskId : taskId;
+    // Fall back to what the phone last reported running. Without this, a task
+    // whose caller already timed out is uncancellable by name — and it is
+    // exactly the task most likely to need cancelling.
+    const resolvedTaskId = taskId === 'current'
+      ? activeTaskId ?? this.untrackedRunningTasks.get(deviceId as DeviceId)
+      : taskId;
     if (!resolvedTaskId) {
       throw new Error(`TASK_NOT_FOUND: device ${deviceId} has no current task`);
     }
@@ -761,6 +842,9 @@ export class TaskCoordinator {
         const device = this.wsServer.getRegistry().get(deviceId);
         const activeTaskId = this.activeTasks.get(deviceId) ?? device?.info.currentTaskId;
         if (this.isTaskClosed(progressTaskId)) {
+          // The result is no longer wanted, but the phone is telling us it is
+          // still working. Remember which task so 'current' can cancel it.
+          this.untrackedRunningTasks.set(deviceId as DeviceId, progressTaskId as TaskId);
           console.warn(`[tabby-control] Ignoring progress for closed task ${progressTaskId}`);
           return;
         }
@@ -876,6 +960,7 @@ export class TaskCoordinator {
     // in-memory task left behind by a lost terminal result.
     if (device?.info.status === 'idle') {
       this.activeTasks.delete(deviceId);
+      this.untrackedRunningTasks.delete(deviceId);
       if (device.info.currentTaskId) {
         registry.updateStatus(deviceId, { currentTaskId: undefined });
       }
@@ -913,6 +998,12 @@ export class TaskCoordinator {
   }
 
   private updateDeviceAfterTaskExit(deviceId: DeviceId, taskId: TaskId): void {
+    // This task is done as far as we are concerned, so it is no longer the
+    // thing 'current' should resolve to. A later progress frame re-records it
+    // if the phone is in fact still running it.
+    if (this.untrackedRunningTasks.get(deviceId) === taskId) {
+      this.untrackedRunningTasks.delete(deviceId);
+    }
     const registry = this.wsServer.getRegistry();
     const registryTaskId = registry.get(deviceId)?.info.currentTaskId;
     const activeTaskId = this.activeTasks.get(deviceId) ?? registryTaskId;

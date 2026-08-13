@@ -67,9 +67,11 @@ import type {
   MirrorSwipeParams,
   MirrorTextParams,
   MirrorKeyParams,
+  PhoneActionVocabulary,
 } from './protocol.js';
 import {
   MirrorSnapshotSchema,
+  buildPhoneActionVocabulary,
 } from './protocol.js';
 import { PhoneSkillCatalog } from './phone-skill-catalog.js';
 
@@ -84,6 +86,13 @@ export interface DeviceSession {
   lastFrameBuffer?: Buffer;
   /** Tracks the last time we received any message or pong from this device. */
   lastActivityAt: number;
+  /**
+   * Action vocabulary this phone reported at auth — the authority for validating
+   * `allowedActions`. Kept off `info` because it is a protocol detail rather
+   * than device metadata, and `info` is broadcast to every device-list consumer.
+   * Undefined when the phone reported none; validation is then skipped.
+   */
+  actionVocabulary?: PhoneActionVocabulary;
 }
 
 // ─── DeviceRegistry ──────────────────────────────────────────────────────────
@@ -139,6 +148,10 @@ export class DeviceRegistry {
         lastSeen: now,
       };
       existing.lastActivityAt = now;
+      // Re-read the vocabulary rather than keeping the one from the first
+      // connection: a reconnect is how an app upgrade shows up here, and an
+      // upgrade is exactly when the action set can change.
+      existing.actionVocabulary = buildPhoneActionVocabulary(capabilities);
       this.notifyChange();
       return existing;
     }
@@ -169,6 +182,7 @@ export class DeviceRegistry {
         isWifiConnected: capabilities?.isWifiConnected,
       },
       lastActivityAt: now,
+      actionVocabulary: buildPhoneActionVocabulary(capabilities),
     };
     this.devices.set(deviceId, session);
     this.notifyChange();

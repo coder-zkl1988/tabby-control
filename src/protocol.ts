@@ -36,8 +36,53 @@ export const DeviceCapabilitiesSchema = z.object({
   wifiSsid: z.string().optional(),
   isWifiConnected: z.boolean().optional(),
   isCharging: z.boolean().optional(),
+  /**
+   * The phone's action vocabulary, reported so this side never has to keep a
+   * copy of it. The phone resolves an `allowedActions` whitelist by intersecting
+   * it with this set, so a name outside it contributes nothing — a whitelist of
+   * only unrecognised names silently becomes deny-all. Knowing the real
+   * vocabulary lets us reject such a whitelist with a readable error instead.
+   */
+  supportedActions: z.array(z.string().min(1)).optional(),
+  /** Alternate spellings the phone folds into a canonical action, e.g. TAP → CLICK. */
+  actionAliases: z.record(z.string().min(1), z.string().min(1)).optional(),
 });
 export type DeviceCapabilities = z.infer<typeof DeviceCapabilitiesSchema>;
+
+/** A phone's action vocabulary, indexed for lookup. */
+export interface PhoneActionVocabulary {
+  actions: ReadonlySet<string>;
+  aliases: Readonly<Record<string, string>>;
+}
+
+/**
+ * Index the vocabulary a phone reported at auth. Returns undefined when the
+ * phone reported none, in which case callers must skip validation rather than
+ * fall back to a hardcoded table — a stale local copy is exactly the drift this
+ * reporting exists to remove.
+ */
+export function buildPhoneActionVocabulary(
+  capabilities?: DeviceCapabilities,
+): PhoneActionVocabulary | undefined {
+  if (!capabilities?.supportedActions?.length) return undefined;
+  return {
+    actions: new Set(capabilities.supportedActions.map((action) => action.trim().toUpperCase())),
+    aliases: Object.fromEntries(
+      Object.entries(capabilities.actionAliases ?? {}).map(
+        ([alias, canonical]) => [alias.trim().toUpperCase(), canonical.trim().toUpperCase()],
+      ),
+    ),
+  };
+}
+
+/** Resolve an action name the way the reporting phone will resolve it. */
+export function normalizePhoneAction(
+  value: string,
+  vocabulary?: PhoneActionVocabulary,
+): string {
+  const upper = value.trim().toUpperCase();
+  return vocabulary?.aliases[upper] ?? upper;
+}
 
 export const AuthMessageSchema = z.object({
   type: z.literal('auth'),
@@ -161,11 +206,17 @@ export const AppRoleSchema = z.enum([
 ]);
 export type AppRole = z.infer<typeof AppRoleSchema>;
 
+// Both policy objects are `.strict()`: an unrecognised key is a hard error, not
+// something to drop. These describe a safety posture, and Zod's default of
+// stripping unknown keys fails open — the caller believes it applied a
+// restriction (`confirmationPolicy: { commenting: 'required' }` is a real
+// example) while the phone never receives one and behaves as if unrestricted.
+// Rejecting the call tells the caller its key was wrong; silence does not.
 export const ConfirmationPolicySchema = z.object({
   login: z.enum(['required', 'forbidden']).optional(),
   publish: z.enum(['required', 'forbidden']).optional(),
   payment: z.literal('forbidden').optional(),
-});
+}).strict();
 
 export const TaskPolicySchema = z.object({
   operationClass: z.string().min(1).optional(),
@@ -173,10 +224,12 @@ export const TaskPolicySchema = z.object({
   allowedAppRoles: z.array(AppRoleSchema).optional(),
   installSourcePolicy: z.literal('official_store_only').optional(),
   allowBrowserDownload: z.boolean().optional(),
+  // Validated against the target device's reported vocabulary at dispatch, not
+  // here — the schema has no device in scope.
   allowedActions: z.array(z.string().min(1)).optional(),
   allowedApps: z.array(z.string().min(1)).optional(),
   confirmationPolicy: ConfirmationPolicySchema.optional(),
-}).superRefine((policy, ctx) => {
+}).strict().superRefine((policy, ctx) => {
   const installOperation =
     policy.operationClass === 'app.install' || policy.operationClass === 'app.update';
   if (installOperation && policy.allowBrowserDownload === true) {

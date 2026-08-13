@@ -11,7 +11,17 @@ import {
 
 const DEVICE_ID = 'phone-1';
 
-function createHarness() {
+/** Stands in for what a connected phone reports at auth. */
+const DEFAULT_VOCABULARY = {
+  actions: new Set([
+    'CLICK', 'TYPE', 'SLIDE', 'AWAKE', 'BACK', 'HOME', 'WAIT',
+    'INFO', 'CALL_USER', 'COMPLETE', 'ABORT',
+  ]),
+  aliases: { TAP: 'CLICK', SWIPE: 'SLIDE', LAUNCH: 'AWAKE' },
+};
+
+/** Pass `actionVocabulary: null` to model a phone that reported none. */
+function createHarness({ actionVocabulary = DEFAULT_VOCABULARY } = {}) {
   const device = {
     info: {
       deviceId: DEVICE_ID,
@@ -20,6 +30,7 @@ function createHarness() {
       connectedAt: Date.now(),
       lastSeen: Date.now(),
     },
+    actionVocabulary: actionVocabulary ?? undefined,
   };
   const sent = [];
   const notified = [];
@@ -686,4 +697,190 @@ test('cancel tool defaults to the current task', async () => {
 
   assert.equal(result.isError, undefined);
   assert.deepEqual(calls, [{ deviceId: DEVICE_ID, taskId: 'current' }]);
+});
+
+test('an under-specified action whitelist still lets the agent finish and navigate', async () => {
+  const { coordinator, sent } = createHarness();
+  // A caller listing only effect actions — the shape an LLM produces when it
+  // thinks about taps but not about how the run terminates. Left as-is this
+  // bricks the task on the phone with POLICY_ACTION_NOT_ALLOWED: action=COMPLETE.
+  const taskPromise = coordinator.executeTask(
+    DEVICE_ID,
+    'comment on a post',
+    1_000,
+    undefined,
+    undefined,
+    undefined,
+    ['CLICK', 'TYPE'],
+    undefined,
+    { allowedActions: ['CLICK', 'TYPE'], operationClass: 'content.comment' },
+  );
+  const observed = taskPromise.catch((error) => error);
+
+  const { params } = executeMessage(sent);
+  for (const action of ['COMPLETE', 'ABORT', 'CALL_USER', 'INFO', 'BACK', 'WAIT']) {
+    assert.ok(params.allowedActions.includes(action), `allowedActions missing ${action}`);
+    assert.ok(
+      params.taskPolicy.allowedActions.includes(action),
+      `taskPolicy.allowedActions missing ${action}`,
+    );
+  }
+  // The caller's own entries survive, and nothing is duplicated.
+  assert.deepEqual(params.allowedActions.slice(0, 2), ['CLICK', 'TYPE']);
+  assert.equal(new Set(params.allowedActions).size, params.allowedActions.length);
+
+  coordinator.cancelTask(DEVICE_ID, 'current');
+  assert.match((await observed).message, /CANCELLED/);
+});
+
+test('a control action the caller already listed is not appended twice', async () => {
+  const { coordinator, sent } = createHarness();
+  const taskPromise = coordinator.executeTask(
+    DEVICE_ID,
+    'browse',
+    1_000,
+    undefined,
+    undefined,
+    undefined,
+    ['CLICK', 'back', 'COMPLETE'],
+  );
+  const observed = taskPromise.catch((error) => error);
+
+  const { allowedActions } = executeMessage(sent).params;
+  assert.equal(allowedActions.filter((a) => a.toUpperCase() === 'BACK').length, 1);
+  assert.equal(allowedActions.filter((a) => a === 'COMPLETE').length, 1);
+
+  coordinator.cancelTask(DEVICE_ID, 'current');
+  assert.match((await observed).message, /CANCELLED/);
+});
+
+test('caller action names are normalised to what the phone compares against', async () => {
+  const { coordinator, sent } = createHarness();
+  // Aliases and casing the phone's normalizeActionName() accepts. Sending them
+  // raw works, but the whitelist we log and the one the phone applies then
+  // differ, which makes a POLICY_ACTION_NOT_ALLOWED impossible to read.
+  const taskPromise = coordinator.executeTask(
+    DEVICE_ID,
+    'browse',
+    1_000,
+    undefined,
+    undefined,
+    undefined,
+    ['Tap', 'swipe', 'Launch'],
+  );
+  const observed = taskPromise.catch((error) => error);
+
+  const { allowedActions } = executeMessage(sent).params;
+  assert.deepEqual(allowedActions.slice(0, 3), ['CLICK', 'SLIDE', 'AWAKE']);
+
+  coordinator.cancelTask(DEVICE_ID, 'current');
+  assert.match((await observed).message, /CANCELLED/);
+});
+
+test('an action name the phone does not know is rejected, not silently dropped', async () => {
+  const { coordinator, device } = createHarness();
+  // The phone intersects the whitelist with its own vocabulary, so "PRESS"
+  // would contribute nothing — a whitelist of only such names becomes deny-all.
+  await assert.rejects(
+    () => coordinator.executeTask(
+      DEVICE_ID,
+      'browse',
+      1_000,
+      undefined,
+      undefined,
+      undefined,
+      ['CLICK', 'PRESS'],
+    ),
+    /PRESS/,
+  );
+  // Rejected before dispatch, so the device is not left pinned to a phantom task.
+  assert.equal(device.info.status, 'idle');
+  assert.equal(coordinator.getActiveTaskId(DEVICE_ID), undefined);
+});
+
+test('a phone that reported no vocabulary is not validated against a local table', async () => {
+  // No reported vocabulary means we do not know this phone's action set. A
+  // hardcoded stand-in is exactly the drift the reporting removes, and would
+  // reject an action a newer build supports — so pass the whitelist through.
+  const { coordinator, sent } = createHarness({ actionVocabulary: null });
+  const taskPromise = coordinator.executeTask(
+    DEVICE_ID,
+    'browse',
+    1_000,
+    undefined,
+    undefined,
+    undefined,
+    ['CLICK', 'SOME_FUTURE_ACTION'],
+  );
+  const observed = taskPromise.catch((error) => error);
+
+  const { allowedActions } = executeMessage(sent).params;
+  assert.ok(allowedActions.includes('SOME_FUTURE_ACTION'));
+  assert.ok(allowedActions.includes('COMPLETE'));
+
+  coordinator.cancelTask(DEVICE_ID, 'current');
+  assert.match((await observed).message, /CANCELLED/);
+});
+
+test('a task the caller timed out on is still cancellable as current', async () => {
+  const { coordinator, device, sent } = createHarness();
+  const taskPromise = coordinator.executeTask(DEVICE_ID, 'long task', 40);
+  const observed = taskPromise.catch((error) => error);
+  const taskId = executeMessage(sent).params.taskId;
+
+  // The caller's wait ends, but by design the phone keeps working.
+  assert.match((await observed).message, /TIMEOUT/);
+
+  // The phone says so, and reports itself busy over the control channel.
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    method: 'agent.progress',
+    params: { taskId, step: 4 },
+  });
+  device.info = { ...device.info, status: 'busy' };
+
+  // Previously this threw TASK_NOT_FOUND: the device could accept no new task
+  // yet could not be stopped without a task id the caller no longer had.
+  coordinator.cancelTask(DEVICE_ID, 'current');
+  assert.equal(cancelMessage(sent).params.taskId, taskId);
+});
+
+test('a phone reporting itself idle drops the remembered task', async () => {
+  const { coordinator, device, sent } = createHarness();
+  const taskPromise = coordinator.executeTask(DEVICE_ID, 'long task', 40);
+  const observed = taskPromise.catch((error) => error);
+  const taskId = executeMessage(sent).params.taskId;
+  assert.match((await observed).message, /TIMEOUT/);
+
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    method: 'agent.progress',
+    params: { taskId, step: 4 },
+  });
+  device.info = { ...device.info, status: 'busy' };
+
+  // The phone going idle over the control channel is authoritative: the task
+  // ended on its own. The remembered id must not linger, or a later 'current'
+  // would cancel something that already finished.
+  device.info = { ...device.info, status: 'idle' };
+
+  assert.throws(() => coordinator.cancelTask(DEVICE_ID, 'current'), /TASK_NOT_FOUND/);
+});
+
+test('an unknown task policy key is rejected instead of silently dropped', async () => {
+  const { coordinator } = createHarness();
+  // `commenting` is not a confirmationPolicy key. Stripping it would leave the
+  // caller believing it required a confirmation the phone never enforces.
+  await assert.rejects(
+    () => coordinator.executeTask(
+      DEVICE_ID,
+      'comment on a post',
+      1_000,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { confirmationPolicy: { commenting: 'required' } },
+    ),
+    /commenting/,
+  );
 });

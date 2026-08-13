@@ -250,16 +250,29 @@ export function createExecuteTaskTool(client: DeviceBridge) {
         allowedActions: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Whitelist of allowed action types (e.g., ["Tap", "Swipe", "Launch"]). Other actions will be blocked.',
+          description: 'OPTIONAL, AND USUALLY OMIT IT. Whitelist of allowed action types; any action not '
+            + 'listed is blocked by the phone and the task fails with POLICY_ACTION_NOT_ALLOWED. Leave '
+            + 'unset unless the user or an explicit policy told you to restrict what the phone may do — '
+            + 'the phone already applies its own safety policy. Names are validated against the action '
+            + 'set the target device reported, and an unrecognised one is rejected with that device\'s '
+            + 'full list rather than silently ignored, so you never need to guess: omit this, or send '
+            + 'your best guess and read the error. Control actions (COMPLETE, ABORT, CALL_USER, INFO, '
+            + 'BACK, WAIT) are always permitted and need not be listed.',
         },
         allowedApps: {
           type: 'array',
           items: { type: 'string' },
-          description: 'Whitelist of allowed app names or packages (e.g., ["微信", "com.tencent.mm"]). Only for Launch actions.',
+          description: 'OPTIONAL, AND USUALLY OMIT IT. Whitelist of allowed app names or packages '
+            + '(e.g., ["微信", "com.tencent.mm"]). Only for AWAKE actions.',
         },
         taskPolicy: {
           type: 'object',
-          description: 'Structured phone policy. It may narrow phone defaults but cannot enable browser APK installation or payment.',
+          description: 'OPTIONAL, AND USUALLY OMIT IT. Structured phone policy. It may narrow phone '
+            + 'defaults but cannot enable browser APK installation or payment. Set it only when the user '
+            + 'or an explicit policy asked you to restrict this run; do not add restrictions on your own '
+            + 'initiative, and never describe a restriction you passed here as if the platform or the '
+            + 'device imposed it — you chose it, so you can also drop it when the user asks you to. '
+            + 'Unknown keys are rejected, so use only the properties listed below.',
           properties: {
             operationClass: {
               type: 'string',
