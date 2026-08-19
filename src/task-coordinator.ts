@@ -48,10 +48,31 @@ const TASK_ARTIFACT_DIR = join(SCREENSHOT_DIR, 'artifacts');
 const MAX_TASK_ARTIFACT_BYTES = 8 * 1024 * 1024;
 const MAX_TASK_ARTIFACTS = 32;
 
-/** Bounds on the completed-result cache that backs post-hoc recovery. */
-const MAX_CACHED_TASK_RESULTS = 64;
-const TASK_RESULT_TTL_MS = 30 * 60_000;
-const MAX_CLOSED_TASKS = 128;
+/**
+ * Bounds on the completed-result cache that backs post-hoc recovery.
+ *
+ * Retention is per device, not a single global list. A global cap makes the
+ * cache scale *against* the fleet: with one cap of N, a fan-out across more
+ * than N phones evicts the earliest finishers before the caller can collect
+ * them — silently, since a missing result is indistinguishable from one that
+ * aged out. Per-device retention grows with the fleet instead, so a phone's
+ * result survives however many other phones report after it.
+ *
+ * The global ceiling remains only as a memory backstop, sized well above any
+ * realistic fleet so it never becomes the effective limit.
+ */
+const MAX_RESULTS_PER_DEVICE = 8;
+const MAX_CACHED_TASK_RESULTS = 8_000;
+/** A fan-out can outlive several phone tasks; 30 minutes expired mid-campaign. */
+const TASK_RESULT_TTL_MS = 6 * 60 * 60_000;
+/** Sized for a fleet-wide dispatch, where every device has a closed task at once. */
+export const MAX_CLOSED_TASKS = 4_000;
+
+/** Bounds on tracked dispatch jobs. A job is small; the results it points at are not. */
+const MAX_TRACKED_JOBS = 200;
+const JOB_TTL_MS = 12 * 60 * 60_000;
+/** Cap on failures listed in one status response, so a fleet-wide failure stays readable. */
+const MAX_LISTED_FAILURES = 50;
 
 /**
  * Control-plane actions the phone agent must always be able to emit.
@@ -141,6 +162,26 @@ export interface ProgressCallback {
   ): void;
 }
 
+// ─── Dispatch jobs ────────────────────────────────────────────────────────────
+
+export type JobDeviceStatus = 'running' | 'succeeded' | 'failed';
+
+export interface JobDeviceState {
+  deviceId: DeviceId;
+  /** Null when the task never reached the phone (rejected during validation). */
+  taskId: TaskId | null;
+  status: JobDeviceStatus;
+  result?: TaskResult;
+  error?: string;
+  settledAt?: number;
+}
+
+export interface DispatchJob {
+  jobId: string;
+  createdAt: number;
+  devices: Map<DeviceId, JobDeviceState>;
+}
+
 // ─── TaskCoordinator ──────────────────────────────────────────────────────────
 
 export class TaskCoordinator {
@@ -176,6 +217,8 @@ export class TaskCoordinator {
     reject: (reason: Error) => void;
     timeout: ReturnType<typeof setTimeout>;
   }>();
+  /** Dispatch jobs, so a fan-out can be tracked without holding the caller open. */
+  private jobs = new Map<string, DispatchJob>();
   private taskArtifacts = new Map<TaskId, TaskArtifact[]>();
   private taskResults = new Map<TaskId, CachedTaskResult>();
   private taskCancellationSources = new Map<
@@ -420,6 +463,162 @@ export class TaskCoordinator {
     });
     await Promise.all(promises);
     return results;
+  }
+
+  /**
+   * Dispatch to many devices and return at once, without waiting for any of them.
+   *
+   * The blocking fan-outs above are only workable for a handful of phones. They
+   * await every device, so wall-clock is the slowest one and a single stuck
+   * phone holds the whole call open; the caller — an agent turn, with its own
+   * stalled-session watchdog — is aborted long before a fleet finishes, losing
+   * the results of the phones that did succeed. Dispatching returns in
+   * milliseconds regardless of fleet size, and the caller collects through
+   * {@link getJobStatus} whenever it likes.
+   *
+   * Results still land in the per-device cache, so a job's outcome survives even
+   * if nobody ever asks for it.
+   */
+  dispatchTasks(
+    tasks: Array<{ deviceId: DeviceId; task: string; maxSteps?: number }>,
+    timeoutMs = 300_000,
+  ): { jobId: string; deviceCount: number } {
+    this.pruneJobs();
+    const jobId = `job_${Date.now()}_${randomUUID().slice(0, 8)}`;
+    const job: DispatchJob = { jobId, createdAt: Date.now(), devices: new Map() };
+
+    for (const { deviceId, task, maxSteps } of tasks) {
+      const state: JobDeviceState = { deviceId, taskId: null, status: 'running' };
+      job.devices.set(deviceId, state);
+
+      // executeTask performs validation and the send synchronously, so the task
+      // id is readable immediately and a pre-dispatch rejection settles on this
+      // tick — visible in the caller's very first getJobStatus.
+      const pending = this.executeTask(deviceId, task, timeoutMs, undefined, undefined, maxSteps);
+      state.taskId = this.activeTasks.get(deviceId) ?? null;
+      void pending.then(
+        (result) => {
+          state.status = result.success ? 'succeeded' : 'failed';
+          state.result = result;
+          if (!result.success) state.error = result.message;
+          state.settledAt = Date.now();
+        },
+        (error: unknown) => {
+          state.status = 'failed';
+          state.error = error instanceof Error ? error.message : String(error);
+          state.settledAt = Date.now();
+        },
+      );
+    }
+
+    this.jobs.set(jobId, job);
+    console.log(
+      `[tabby-control] >>> DISPATCH_JOB >>> jobId=${jobId} devices=${job.devices.size}`,
+    );
+    return { jobId, deviceCount: job.devices.size };
+  }
+
+  /**
+   * Roll a job up to something a caller can read in one go.
+   *
+   * Deliberately a summary rather than every result: a few hundred phone
+   * transcripts do not fit in an agent's context, and the counts plus the
+   * failures are what a caller acts on. Pass `includeResults` to page through
+   * the successful ones.
+   */
+  getJobStatus(
+    jobId: string,
+    opts: { includeResults?: boolean; offset?: number; limit?: number } = {},
+  ): {
+    jobId: string;
+    createdAt: number;
+    ageMs: number;
+    total: number;
+    running: number;
+    succeeded: number;
+    failed: number;
+    done: boolean;
+    failures: Array<{ deviceId: string; taskId: string | null; error: string }>;
+    truncatedFailures: number;
+    results?: Array<{ deviceId: string; taskId: string | null; message: string }>;
+    nextOffset?: number;
+  } {
+    const job = this.jobs.get(jobId);
+    if (!job) {
+      throw new Error(
+        `JOB_NOT_FOUND: no job ${jobId}. It may have aged out — per-device results `
+        + 'outlive jobs, so try device_get_task_results.',
+      );
+    }
+    const states = [...job.devices.values()];
+    const running = states.filter((d) => d.status === 'running');
+    const succeeded = states.filter((d) => d.status === 'succeeded');
+    const failed = states.filter((d) => d.status === 'failed');
+
+    const listedFailures = failed.slice(0, MAX_LISTED_FAILURES);
+    const summary = {
+      jobId,
+      createdAt: job.createdAt,
+      ageMs: Date.now() - job.createdAt,
+      total: states.length,
+      running: running.length,
+      succeeded: succeeded.length,
+      failed: failed.length,
+      done: running.length === 0,
+      failures: listedFailures.map((d) => ({
+        deviceId: d.deviceId,
+        taskId: d.taskId,
+        error: d.error ?? 'unknown error',
+      })),
+      truncatedFailures: failed.length - listedFailures.length,
+    };
+    if (!opts.includeResults) return summary;
+
+    const offset = Math.max(0, opts.offset ?? 0);
+    const limit = Math.max(1, Math.min(opts.limit ?? 20, 100));
+    const page = succeeded.slice(offset, offset + limit);
+    return {
+      ...summary,
+      results: page.map((d) => ({
+        deviceId: d.deviceId,
+        taskId: d.taskId,
+        message: d.result?.message ?? '',
+      })),
+      ...(offset + limit < succeeded.length ? { nextOffset: offset + limit } : {}),
+    };
+  }
+
+  /** Cancel every device still running in a job. */
+  cancelJob(jobId: string): { cancelled: number; failed: Array<{ deviceId: string; error: string }> } {
+    const job = this.jobs.get(jobId);
+    if (!job) throw new Error(`JOB_NOT_FOUND: no job ${jobId}`);
+    let cancelled = 0;
+    const failed: Array<{ deviceId: string; error: string }> = [];
+    for (const state of job.devices.values()) {
+      if (state.status !== 'running' || !state.taskId) continue;
+      try {
+        this.cancelTask(state.deviceId, state.taskId);
+        cancelled += 1;
+      } catch (error) {
+        failed.push({
+          deviceId: state.deviceId,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+    return { cancelled, failed };
+  }
+
+  private pruneJobs(): void {
+    const cutoff = Date.now() - JOB_TTL_MS;
+    for (const [jobId, job] of this.jobs) {
+      if (job.createdAt < cutoff) this.jobs.delete(jobId);
+    }
+    while (this.jobs.size > MAX_TRACKED_JOBS) {
+      const oldest = this.jobs.keys().next();
+      if (oldest.done) break;
+      this.jobs.delete(oldest.value);
+    }
   }
 
   /**
@@ -1084,12 +1283,34 @@ export class TaskCoordinator {
     for (const [taskId, entry] of this.taskResults) {
       if (entry.completedAt < cutoff) this.taskResults.delete(taskId);
     }
-    // Map iterates in insertion order, and task ids are unique, so the first
-    // key is always the oldest surviving entry.
-    while (this.taskResults.size > MAX_CACHED_TASK_RESULTS) {
-      const oldest = this.taskResults.keys().next();
-      if (oldest.done) break;
-      this.taskResults.delete(oldest.value);
+
+    // Trim per device rather than globally. Map iterates in insertion order, so
+    // walking backwards visits each device's newest results first; anything past
+    // its allowance is the oldest for THAT device. Trimming globally instead
+    // would delete whole devices' results just because other devices reported
+    // later — the failure mode this cache exists to prevent.
+    const keptPerDevice = new Map<string, number>();
+    for (const [taskId, entry] of [...this.taskResults].reverse()) {
+      const kept = keptPerDevice.get(entry.deviceId) ?? 0;
+      if (kept >= MAX_RESULTS_PER_DEVICE) {
+        this.taskResults.delete(taskId);
+        continue;
+      }
+      keptPerDevice.set(entry.deviceId, kept + 1);
+    }
+
+    // Memory backstop only. Reaching it means the fleet is far larger than the
+    // per-device allowance anticipated, so log rather than evict in silence.
+    if (this.taskResults.size > MAX_CACHED_TASK_RESULTS) {
+      const excess = this.taskResults.size - MAX_CACHED_TASK_RESULTS;
+      console.warn(
+        `[tabby-control] Result cache over its ${MAX_CACHED_TASK_RESULTS} backstop; `
+        + `dropping ${excess} oldest across all devices. Results may be lost before `
+        + 'collection — raise MAX_CACHED_TASK_RESULTS for a fleet this size.',
+      );
+      for (const taskId of [...this.taskResults.keys()].slice(0, excess)) {
+        this.taskResults.delete(taskId);
+      }
     }
   }
 

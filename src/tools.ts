@@ -371,6 +371,11 @@ export function createExecuteTaskAllTool(client: DeviceBridge) {
     name: 'device_execute_task_all',
     label: 'Execute Task on All Idle Devices',
     description: [
+      'ONLY FOR A HANDFUL OF PHONES AND SHORT TASKS. This waits for every device, so it',
+      'takes as long as the slowest one and a single stuck phone holds the whole call',
+      'open — and a wait beyond a few minutes gets the calling turn cut short, losing',
+      'the results of the phones that did succeed. For a larger fleet or longer work',
+      'use device_dispatch_tasks, which returns immediately.',
       'Send the same natural language task to ALL currently idle connected devices simultaneously.',
       'Useful for parallel operations like "open WeChat on all devices".',
       'Returns a summary of results from each device.',
@@ -416,11 +421,193 @@ export function createExecuteTaskAllTool(client: DeviceBridge) {
   };
 }
 
+export function createDispatchTasksTool(client: DeviceBridge) {
+  return {
+    name: 'device_dispatch_tasks',
+    label: 'Dispatch Tasks to Many Devices (does not wait)',
+    description: [
+      'THE DEFAULT WAY TO DRIVE MORE THAN A FEW PHONES. Sends a task to each',
+      'listed device and returns a jobId immediately, in milliseconds, without',
+      'waiting for any phone to finish. Poll device_job_status with that jobId to',
+      'see how the fleet is doing, and device_cancel_job to stop what is left.',
+      'Prefer this over device_execute_batch and device_execute_task_all whenever',
+      'the work may run for more than a couple of minutes or spans more than a',
+      'handful of phones: those wait for the slowest device, so one stuck phone',
+      'holds up everything, and a long wait gets your own turn cut short — which',
+      'loses the results of the phones that did succeed.',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        tasks: {
+          type: 'array',
+          items: {
+            type: 'object',
+            properties: {
+              deviceId: { type: 'string' },
+              task: { type: 'string' },
+              maxSteps: { type: 'number' },
+            },
+            required: ['deviceId', 'task'],
+          },
+          description: 'Array of { deviceId, task } pairs. Use the same task text for a fleet-wide sweep.',
+        },
+        timeout: {
+          type: 'number',
+          description: 'Per-device inactivity timeout in milliseconds (default: 300000). Not a total '
+            + 'runtime budget: a device reporting progress runs as long as its task needs.',
+          default: 300000,
+        },
+      },
+      required: ['tasks'],
+    },
+    async execute(
+      _id: string,
+      params: { tasks?: Array<{ deviceId: string; task: string; maxSteps?: number }>; timeout?: number },
+    ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+      if (!params.tasks?.length) {
+        return {
+          content: [{ type: 'text', text: 'tasks array is required and must not be empty.' }],
+          isError: true,
+        };
+      }
+      try {
+        const { jobId, deviceCount } = await client.dispatchTasks(
+          params.tasks,
+          Math.min(params.timeout ?? 300_000, 600_000),
+        );
+        return {
+          content: [{
+            type: 'text',
+            text: `🚀 Dispatched to ${deviceCount} device(s).\njobId: ${jobId}\n\n`
+              + 'Nothing has finished yet — this call does not wait. Poll '
+              + `device_job_status with jobId "${jobId}" to collect results.`,
+          }],
+        };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `Dispatch failed: ${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+        };
+      }
+    },
+  };
+}
+
+export function createJobStatusTool(client: DeviceBridge) {
+  return {
+    name: 'device_job_status',
+    label: 'Check a Dispatched Job',
+    description: [
+      'Report how a device_dispatch_tasks job is going: how many devices are still',
+      'running, how many succeeded, and every failure with its reason. Returns a',
+      'summary by default because a few hundred phone transcripts will not fit in',
+      'context; set includeResults to page through the successful ones.',
+    ].join(' '),
+    parameters: {
+      type: 'object',
+      properties: {
+        jobId: { type: 'string', description: 'jobId returned by device_dispatch_tasks' },
+        includeResults: {
+          type: 'boolean',
+          description: 'Include a page of successful device results. Omit while work is still running.',
+        },
+        offset: { type: 'number', description: 'Result page offset (with includeResults).' },
+        limit: { type: 'number', description: 'Results per page, max 100 (default 20).' },
+      },
+      required: ['jobId'],
+    },
+    async execute(
+      _id: string,
+      params: { jobId?: string; includeResults?: boolean; offset?: number; limit?: number },
+    ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+      if (!params.jobId) {
+        return { content: [{ type: 'text', text: 'jobId is required.' }], isError: true };
+      }
+      try {
+        const status = await client.getJobStatus(params.jobId, {
+          includeResults: params.includeResults,
+          offset: params.offset,
+          limit: params.limit,
+        }) as {
+          total: number; running: number; succeeded: number; failed: number; done: boolean;
+          ageMs: number;
+          failures: Array<{ deviceId: string; taskId: string | null; error: string }>;
+          truncatedFailures: number;
+          results?: Array<{ deviceId: string; taskId: string | null; message: string }>;
+          nextOffset?: number;
+        };
+        const lines = [
+          `${status.done ? '✅ Job finished' : '⏳ Job running'} — ${Math.round(status.ageMs / 1000)}s elapsed`,
+          `Devices: ${status.total} total | ${status.running} running | ${status.succeeded} succeeded | ${status.failed} failed`,
+        ];
+        if (status.failures.length) {
+          lines.push('', 'Failures:');
+          for (const f of status.failures) lines.push(`  ❌ [${f.deviceId}] ${f.error}`);
+          if (status.truncatedFailures > 0) {
+            lines.push(`  …and ${status.truncatedFailures} more failure(s) not listed.`);
+          }
+        }
+        if (status.results?.length) {
+          lines.push('', 'Results:');
+          for (const r of status.results) lines.push(`  ✅ [${r.deviceId}] ${r.message}`);
+          if (status.nextOffset != null) {
+            lines.push(`  …more results available; call again with offset=${status.nextOffset}.`);
+          }
+        }
+        if (!status.done) {
+          lines.push('', 'Still running — poll again rather than starting new work on these devices.');
+        }
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }],
+          isError: true,
+        };
+      }
+    },
+  };
+}
+
+export function createCancelJobTool(client: DeviceBridge) {
+  return {
+    name: 'device_cancel_job',
+    label: 'Cancel a Dispatched Job',
+    description: 'Stop every device still running in a device_dispatch_tasks job. '
+      + 'Devices that already finished are left alone.',
+    parameters: {
+      type: 'object',
+      properties: { jobId: { type: 'string' } },
+      required: ['jobId'],
+    },
+    async execute(
+      _id: string,
+      params: { jobId?: string },
+    ): Promise<{ content: Array<{ type: 'text'; text: string }>; isError?: boolean }> {
+      if (!params.jobId) {
+        return { content: [{ type: 'text', text: 'jobId is required.' }], isError: true };
+      }
+      try {
+        const { cancelled, failed } = await client.cancelJob(params.jobId);
+        const lines = [`🛑 Cancelled ${cancelled} running device task(s).`];
+        for (const f of failed) lines.push(`  ⚠️ [${f.deviceId}] ${f.error}`);
+        return { content: [{ type: 'text', text: lines.join('\n') }] };
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: err instanceof Error ? err.message : String(err) }],
+          isError: true,
+        };
+      }
+    },
+  };
+}
+
 export function createExecuteBatchTool(client: DeviceBridge) {
   return {
     name: 'device_execute_batch',
     label: 'Execute Different Tasks on Multiple Devices',
     description: [
+      'ONLY FOR A HANDFUL OF PHONES AND SHORT TASKS. This waits for every device, so it takes as long as the slowest one and a single stuck phone holds the whole call open — and a wait beyond a few minutes gets the calling turn cut short, losing the results of the phones that did succeed. For a larger fleet or longer work use device_dispatch_tasks, which returns immediately.',
       'Send different natural language tasks to different devices at the same time.',
       'Each device runs its own independent agent loop.',
       'Example: device A opens WeChat while device B opens DingTalk.',

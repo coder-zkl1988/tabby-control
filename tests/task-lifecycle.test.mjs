@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { TaskCoordinator } from '../dist/task-coordinator.js';
+import { MAX_CLOSED_TASKS, TaskCoordinator } from '../dist/task-coordinator.js';
 import {
   createCancelTaskTool,
   createExecuteBatchTool,
@@ -674,11 +674,12 @@ test('cancellation sources are pruned with their closed task ids', async () => {
   const { coordinator, sent } = createHarness();
   const taskIds = [];
 
-  for (let index = 0; index < 129; index += 1) {
+  // Derived from the cap rather than hardcoded: the bound is sized for a
+  // fleet-wide dispatch and will change again as fleets grow.
+  for (let index = 0; index < MAX_CLOSED_TASKS + 1; index += 1) {
     const taskPromise = coordinator.executeTask(DEVICE_ID, `task ${index}`, 1_000);
     const observed = taskPromise.catch((error) => error);
-    const taskId = executeMessage(sent, index).params.taskId;
-    taskIds.push(taskId);
+    taskIds.push(sent.at(-1).message.params.taskId);
     coordinator.cancelTask(DEVICE_ID, 'current', 'caller_disconnected');
     await observed;
   }
@@ -863,6 +864,140 @@ test('a phone reporting itself idle drops the remembered task', async () => {
   device.info = { ...device.info, status: 'idle' };
 
   assert.throws(() => coordinator.cancelTask(DEVICE_ID, 'current'), /TASK_NOT_FOUND/);
+});
+
+test('a large fan-out does not evict the earliest devices\' results', async () => {
+  // The failure this guards: with a single global cap of N, a fan-out across
+  // more than N phones drops the first finishers before the caller collects
+  // them — and a missing result is indistinguishable from one that aged out.
+  const { coordinator } = createHarness();
+  const FLEET = 200;
+
+  for (let i = 0; i < FLEET; i += 1) {
+    coordinator.rememberTaskResult(
+      `t_fanout_${i}`,
+      `phone-${i}`,
+      { taskId: `t_fanout_${i}`, success: true, message: `done ${i}` },
+      true,
+    );
+  }
+
+  // Every device must still have its own result, including the first to report.
+  for (const i of [0, 1, FLEET / 2, FLEET - 1]) {
+    const found = coordinator.getTaskResult(`t_fanout_${i}`);
+    assert.ok(found, `result for phone-${i} was evicted`);
+    assert.equal(found.deviceId, `phone-${i}`);
+  }
+});
+
+test('one busy device cannot crowd out the rest of the fleet', async () => {
+  const { coordinator } = createHarness();
+
+  // One device reports far more results than its allowance...
+  for (let i = 0; i < 50; i += 1) {
+    coordinator.rememberTaskResult(
+      `t_chatty_${i}`,
+      'phone-chatty',
+      { taskId: `t_chatty_${i}`, success: true, message: `chatty ${i}` },
+      true,
+    );
+  }
+  // ...and a quiet device reports once, before being followed by many others.
+  coordinator.rememberTaskResult(
+    't_quiet',
+    'phone-quiet',
+    { taskId: 't_quiet', success: true, message: 'quiet' },
+    true,
+  );
+  for (let i = 50; i < 100; i += 1) {
+    coordinator.rememberTaskResult(
+      `t_chatty_${i}`,
+      'phone-chatty',
+      { taskId: `t_chatty_${i}`, success: true, message: `chatty ${i}` },
+      true,
+    );
+  }
+
+  assert.ok(coordinator.getTaskResult('t_quiet'), 'quiet device lost its only result');
+  // The chatty device is trimmed to its own allowance, keeping the newest.
+  assert.equal(coordinator.getTaskResult('t_chatty_0'), null);
+  assert.ok(coordinator.getTaskResult('t_chatty_99'));
+});
+
+test('dispatch returns at once instead of waiting for the fleet', async () => {
+  const { coordinator, sent } = createHarness();
+
+  const before = Date.now();
+  const { jobId, deviceCount } = coordinator.dispatchTasks(
+    [{ deviceId: DEVICE_ID, task: 'long sweep' }],
+    60_000,
+  );
+  const elapsed = Date.now() - before;
+
+  // The phone has not answered and will not for minutes; the call is already back.
+  assert.equal(deviceCount, 1);
+  assert.ok(elapsed < 100, `dispatch blocked for ${elapsed}ms`);
+  assert.equal(executeMessage(sent).params.task, 'long sweep');
+
+  const status = coordinator.getJobStatus(jobId);
+  assert.equal(status.total, 1);
+  assert.equal(status.running, 1);
+  assert.equal(status.done, false);
+
+  coordinator.cancelJob(jobId);
+});
+
+test('a job reports each device outcome as it settles', async () => {
+  const { coordinator, sent } = createHarness();
+  const { jobId } = coordinator.dispatchTasks([{ deviceId: DEVICE_ID, task: 'sweep' }], 60_000);
+  const taskId = executeMessage(sent).params.taskId;
+
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${taskId}`,
+    result: { taskId, success: true, message: '2 replies sent', totalSteps: 9 },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const status = coordinator.getJobStatus(jobId, { includeResults: true });
+  assert.equal(status.done, true);
+  assert.equal(status.succeeded, 1);
+  assert.equal(status.failed, 0);
+  assert.equal(status.results[0].message, '2 replies sent');
+});
+
+test('a job summarises rather than returning every device transcript', async () => {
+  const { coordinator } = createHarness();
+  // Stand in for a fleet: register states directly, since the harness has one device.
+  const job = { jobId: 'job_fake', createdAt: Date.now(), devices: new Map() };
+  for (let i = 0; i < 300; i += 1) {
+    job.devices.set(`phone-${i}`, {
+      deviceId: `phone-${i}`,
+      taskId: `t_${i}`,
+      status: i < 280 ? 'succeeded' : 'failed',
+      result: { taskId: `t_${i}`, success: i < 280, message: `transcript ${i}` },
+      error: i < 280 ? undefined : `boom ${i}`,
+    });
+  }
+  coordinator.jobs.set('job_fake', job);
+
+  const summary = coordinator.getJobStatus('job_fake');
+  assert.equal(summary.total, 300);
+  assert.equal(summary.succeeded, 280);
+  assert.equal(summary.failed, 20);
+  // Failures are listed (they are what a caller acts on), successes are not.
+  assert.equal(summary.failures.length, 20);
+  assert.equal(summary.results, undefined);
+
+  // Results only when asked, and paged.
+  const page = coordinator.getJobStatus('job_fake', { includeResults: true, limit: 20 });
+  assert.equal(page.results.length, 20);
+  assert.equal(page.nextOffset, 20);
+});
+
+test('a job id that aged out points the caller at per-device results', async () => {
+  const { coordinator } = createHarness();
+  assert.throws(() => coordinator.getJobStatus('job_missing'), /JOB_NOT_FOUND/);
+  assert.throws(() => coordinator.getJobStatus('job_missing'), /device_get_task_results/);
 });
 
 test('an unknown task policy key is rejected instead of silently dropped', async () => {

@@ -156,6 +156,26 @@ export class BridgeClient {
     );
   }
 
+  async dispatchTasks(
+    tasks: Array<{ deviceId: string; task: string; maxSteps?: number }>,
+    timeoutMs = 300_000,
+  ): Promise<{ jobId: string; deviceCount: number }> {
+    return this.call('device_dispatch_tasks', { tasks, timeoutMs });
+  }
+
+  async getJobStatus(
+    jobId: string,
+    opts?: { includeResults?: boolean; offset?: number; limit?: number },
+  ): Promise<unknown> {
+    return this.call('device_job_status', { jobId, ...opts });
+  }
+
+  async cancelJob(
+    jobId: string,
+  ): Promise<{ cancelled: number; failed: Array<{ deviceId: string; error: string }> }> {
+    return this.call('device_cancel_job', { jobId });
+  }
+
   async getTaskResults(query: TaskResultQuery): Promise<CachedTaskResult[]> {
     return this.call<CachedTaskResult[]>('device_get_task_results', { ...query });
   }

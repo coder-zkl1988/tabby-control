@@ -21,6 +21,9 @@ import {
   createCancelTaskTool,
   createGetStatusTool,
   createExecuteSkillTool,
+  createDispatchTasksTool,
+  createJobStatusTool,
+  createCancelJobTool,
 } from './tools.js';
 
 // ─── Config ──────────────────────────────────────────────────────────────────
@@ -130,6 +133,18 @@ class InProcessBridge {
     return Object.fromEntries(result);
   }
 
+  async dispatchTasks(tasks: Array<{ deviceId: string; task: string; maxSteps?: number }>, timeoutMs = 300_000) {
+    return this.coordinator.dispatchTasks(tasks, timeoutMs);
+  }
+
+  async getJobStatus(jobId: string, opts?: { includeResults?: boolean; offset?: number; limit?: number }) {
+    return this.coordinator.getJobStatus(jobId, opts);
+  }
+
+  async cancelJob(jobId: string) {
+    return this.coordinator.cancelJob(jobId);
+  }
+
   async getTaskResults(query: TaskResultQuery): Promise<CachedTaskResult[]> {
     if (query.taskId) {
       const entry = this.coordinator.getTaskResult(query.taskId);
@@ -233,6 +248,21 @@ export function startHttpServer(
               );
               break;
             }
+            case 'device_dispatch_tasks': {
+              const tasks = params.tasks as Array<{ deviceId: string; task: string; maxSteps?: number }>;
+              result = coordinator.dispatchTasks(tasks, params.timeoutMs as number ?? 300_000);
+              break;
+            }
+            case 'device_job_status':
+              result = coordinator.getJobStatus(params.jobId as string, {
+                includeResults: params.includeResults as boolean | undefined,
+                offset: params.offset as number | undefined,
+                limit: params.limit as number | undefined,
+              });
+              break;
+            case 'device_cancel_job':
+              result = coordinator.cancelJob(params.jobId as string);
+              break;
             case 'device_execute_batch': {
               const tasks = params.tasks as Array<{ deviceId: string; task: string }>;
               result = Object.fromEntries(
@@ -441,6 +471,9 @@ export default {
       }
       async executeTaskAll(task: string, timeoutMs?: number) { return (await this._get()).executeTaskAll(task, timeoutMs); }
       async executeBatch(tasks: Array<{ deviceId: string; task: string }>, timeoutMs?: number) { return (await this._get()).executeBatch(tasks, timeoutMs); }
+      async dispatchTasks(tasks: Array<{ deviceId: string; task: string; maxSteps?: number }>, timeoutMs?: number) { return (await this._get()).dispatchTasks(tasks, timeoutMs); }
+      async getJobStatus(jobId: string, opts?: { includeResults?: boolean; offset?: number; limit?: number }) { return (await this._get()).getJobStatus(jobId, opts); }
+      async cancelJob(jobId: string) { return (await this._get()).cancelJob(jobId); }
       async getTaskResults(query: TaskResultQuery) { return (await this._get()).getTaskResults(query); }
       async cancelTask(deviceId: string, taskId: string) { return (await this._get()).cancelTask(deviceId, taskId); }
       async getStatus(deviceId: string) { return (await this._get()).getStatus(deviceId); }
@@ -507,6 +540,9 @@ export default {
     api.registerTool(makeTool(createExecuteTaskTool));
     api.registerTool(makeTool(createExecuteTaskAllTool));
     api.registerTool(makeTool(createExecuteBatchTool));
+    api.registerTool(makeTool(createDispatchTasksTool));
+    api.registerTool(makeTool(createJobStatusTool));
+    api.registerTool(makeTool(createCancelJobTool));
     api.registerTool(makeTool(createGetTaskResultsTool));
     api.registerTool(makeTool(createCancelTaskTool));
     api.registerTool(makeTool(createGetStatusTool));

@@ -633,6 +633,16 @@ export interface DeviceBridge {
   ): Promise<TaskResult>;
   executeTaskAll(task: string, timeoutMs?: number): Promise<Record<string, TaskResult>>;
   executeBatch(tasks: Array<{ deviceId: string; task: string }>, timeoutMs?: number): Promise<Record<string, TaskResult>>;
+  /** Fan out without waiting; the caller collects via {@link DeviceBridge.getJobStatus}. */
+  dispatchTasks(
+    tasks: Array<{ deviceId: string; task: string; maxSteps?: number }>,
+    timeoutMs?: number,
+  ): Promise<{ jobId: string; deviceCount: number }>;
+  getJobStatus(
+    jobId: string,
+    opts?: { includeResults?: boolean; offset?: number; limit?: number },
+  ): Promise<unknown>;
+  cancelJob(jobId: string): Promise<{ cancelled: number; failed: Array<{ deviceId: string; error: string }> }>;
   getTaskResults(query: TaskResultQuery): Promise<CachedTaskResult[]>;
   cancelTask(deviceId: string, taskId: string): Promise<void>;
   executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs?: number): Promise<SubTaskResult>;
