@@ -43,6 +43,7 @@
     "phone-skills:build": "node scripts/build-phone-skills.mjs",
     "phone-skills:check": "node scripts/build-phone-skills.mjs --check",
     "release-gate:device": "node scripts/run-device-release-gate.mjs",
+    "loadtest:fleet": "node scripts/fleet-load-test.mjs",
     "prebuild": "npm run phone-skills:build",
     "build": "tsc --project tsconfig.build.json",
     "build:watch": "tsc --project tsconfig.build.json --watch",
