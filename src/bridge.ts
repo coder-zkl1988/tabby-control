@@ -156,6 +156,19 @@ export class BridgeClient {
     );
   }
 
+  async executeBatchBounded(
+    tasks: Array<{ deviceId: string; task: string; maxSteps?: number }>,
+    timeoutMs = 300_000,
+    softDeadlineMs = 240_000,
+  ): Promise<{
+    jobId: string;
+    done: boolean;
+    results: Record<string, TaskResult>;
+    pending: string[];
+  }> {
+    return this.call('device_execute_batch_bounded', { tasks, timeoutMs, softDeadlineMs }, NO_TRANSPORT_DEADLINE);
+  }
+
   async dispatchTasks(
     tasks: Array<{ deviceId: string; task: string; maxSteps?: number }>,
     timeoutMs = 300_000,

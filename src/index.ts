@@ -133,6 +133,15 @@ class InProcessBridge {
     return Object.fromEntries(result);
   }
 
+  async executeBatchBounded(
+    tasks: Array<{ deviceId: string; task: string; maxSteps?: number }>,
+    timeoutMs = 300_000,
+    softDeadlineMs = 240_000,
+  ) {
+    const r = await this.coordinator.executeBatchBounded(tasks, timeoutMs, softDeadlineMs);
+    return { ...r, results: Object.fromEntries(r.results) };
+  }
+
   async dispatchTasks(tasks: Array<{ deviceId: string; task: string; maxSteps?: number }>, timeoutMs = 300_000) {
     return this.coordinator.dispatchTasks(tasks, timeoutMs);
   }
@@ -246,6 +255,16 @@ export function startHttpServer(
               result = Object.fromEntries(
                 await coordinator.executeTaskAll(params.task as string, params.timeoutMs as number ?? 300_000),
               );
+              break;
+            }
+            case 'device_execute_batch_bounded': {
+              const tasks = params.tasks as Array<{ deviceId: string; task: string; maxSteps?: number }>;
+              const r = await coordinator.executeBatchBounded(
+                tasks,
+                params.timeoutMs as number ?? 300_000,
+                params.softDeadlineMs as number ?? 240_000,
+              );
+              result = { ...r, results: Object.fromEntries(r.results) };
               break;
             }
             case 'device_dispatch_tasks': {
@@ -471,6 +490,7 @@ export default {
       }
       async executeTaskAll(task: string, timeoutMs?: number) { return (await this._get()).executeTaskAll(task, timeoutMs); }
       async executeBatch(tasks: Array<{ deviceId: string; task: string }>, timeoutMs?: number) { return (await this._get()).executeBatch(tasks, timeoutMs); }
+      async executeBatchBounded(tasks: Array<{ deviceId: string; task: string; maxSteps?: number }>, timeoutMs?: number, softDeadlineMs?: number) { return (await this._get()).executeBatchBounded(tasks, timeoutMs, softDeadlineMs); }
       async dispatchTasks(tasks: Array<{ deviceId: string; task: string; maxSteps?: number }>, timeoutMs?: number) { return (await this._get()).dispatchTasks(tasks, timeoutMs); }
       async getJobStatus(jobId: string, opts?: { includeResults?: boolean; offset?: number; limit?: number }) { return (await this._get()).getJobStatus(jobId, opts); }
       async cancelJob(jobId: string) { return (await this._get()).cancelJob(jobId); }

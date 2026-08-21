@@ -1,5 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import { MAX_CLOSED_TASKS, TaskCoordinator } from '../dist/task-coordinator.js';
 import {
@@ -21,7 +24,7 @@ const DEFAULT_VOCABULARY = {
 };
 
 /** Pass `actionVocabulary: null` to model a phone that reported none. */
-function createHarness({ actionVocabulary = DEFAULT_VOCABULARY } = {}) {
+function createHarness({ actionVocabulary = DEFAULT_VOCABULARY, resultsFile } = {}) {
   const device = {
     info: {
       deviceId: DEVICE_ID,
@@ -57,7 +60,11 @@ function createHarness({ actionVocabulary = DEFAULT_VOCABULARY } = {}) {
   };
 
   return {
-    coordinator: new TaskCoordinator(wsServer, (channel, data) => notified.push({ channel, data })),
+    coordinator: new TaskCoordinator(
+      wsServer,
+      (channel, data) => notified.push({ channel, data }),
+      { resultsFile: resultsFile ?? join(mkdtempSync(join(tmpdir(), 'tabby-harness-')), 'r.json') },
+    ),
     device,
     notified,
     sent,
@@ -478,14 +485,19 @@ test('late progress from a cancelled task cannot resurrect or replace task owner
 
 test('batch interaction output includes the resume contract', async () => {
   const tool = createExecuteBatchTool({
-    executeBatch: async () => ({
-      [DEVICE_ID]: {
-        taskId: 't_paused',
-        success: false,
-        message: 'Need a phone number',
-        needsInteraction: true,
-        interactionMessage: 'Need a phone number',
+    executeBatchBounded: async () => ({
+      jobId: 'job_test',
+      done: true,
+      results: {
+        [DEVICE_ID]: {
+          taskId: 't_paused',
+          success: false,
+          message: 'Need a phone number',
+          needsInteraction: true,
+          interactionMessage: 'Need a phone number',
+        },
       },
+      pending: [],
     }),
   });
 
@@ -998,6 +1010,80 @@ test('a job id that aged out points the caller at per-device results', async () 
   const { coordinator } = createHarness();
   assert.throws(() => coordinator.getJobStatus('job_missing'), /JOB_NOT_FOUND/);
   assert.throws(() => coordinator.getJobStatus('job_missing'), /device_get_task_results/);
+});
+
+test('bounded fan-out returns complete results when the fleet finishes in time', async () => {
+  const { coordinator, sent } = createHarness();
+  const bounded = coordinator.executeBatchBounded(
+    [{ deviceId: DEVICE_ID, task: 'quick step' }],
+    60_000,
+    5_000,
+  );
+  const taskId = executeMessage(sent).params.taskId;
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${taskId}`,
+    result: { taskId, success: true, message: 'done fast', totalSteps: 2 },
+  });
+
+  const outcome = await bounded;
+  assert.equal(outcome.done, true);
+  assert.equal(outcome.pending.length, 0);
+  assert.equal(outcome.results.get(DEVICE_ID).message, 'done fast');
+});
+
+test('bounded fan-out hands back a live job instead of waiting past the deadline', async () => {
+  const { coordinator, sent } = createHarness();
+  const started = Date.now();
+  // 200ms soft deadline; the phone never answers within it.
+  const outcome = await coordinator.executeBatchBounded(
+    [{ deviceId: DEVICE_ID, task: 'slow sweep' }],
+    60_000,
+    200,
+  );
+  const waited = Date.now() - started;
+
+  assert.equal(outcome.done, false);
+  assert.deepEqual(outcome.pending, [DEVICE_ID]);
+  assert.ok(waited < 3_000, `waited ${waited}ms — the deadline did not bound the call`);
+
+  // The job stays live: the phone finishing later lands in it and in the cache.
+  const taskId = executeMessage(sent).params.taskId;
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${taskId}`,
+    result: { taskId, success: true, message: 'finished late', totalSteps: 9 },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+
+  const status = coordinator.getJobStatus(outcome.jobId, { includeResults: true });
+  assert.equal(status.done, true);
+  assert.equal(status.results[0].message, 'finished late');
+  assert.equal(coordinator.getTaskResult(taskId).result.message, 'finished late');
+});
+
+test('results survive a coordinator restart via the persistence file', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'tabby-results-')), 'task-results.json');
+  const first = createHarness({ resultsFile: file });
+  first.coordinator.rememberTaskResult(
+    't_persist_1',
+    DEVICE_ID,
+    { taskId: 't_persist_1', success: true, message: 'survives restarts' },
+    true,
+  );
+  // Persistence is write-behind; wait out the debounce.
+  await new Promise((resolve) => setTimeout(resolve, 800));
+  assert.ok(readFileSync(file, 'utf8').includes('survives restarts'));
+
+  const second = createHarness({ resultsFile: file });
+  const restored = second.coordinator.getTaskResult('t_persist_1');
+  assert.ok(restored, 'result did not survive the restart');
+  assert.equal(restored.result.message, 'survives restarts');
+});
+
+test('a corrupt persistence file is ignored, not fatal', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'tabby-results-')), 'task-results.json');
+  writeFileSync(file, '{not json[', 'utf8');
+  const { coordinator } = createHarness({ resultsFile: file });
+  assert.equal(coordinator.getTaskResult('t_whatever'), null);
 });
 
 test('an unknown task policy key is rejected instead of silently dropped', async () => {

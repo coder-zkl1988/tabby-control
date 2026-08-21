@@ -633,6 +633,20 @@ export interface DeviceBridge {
   ): Promise<TaskResult>;
   executeTaskAll(task: string, timeoutMs?: number): Promise<Record<string, TaskResult>>;
   executeBatch(tasks: Array<{ deviceId: string; task: string }>, timeoutMs?: number): Promise<Record<string, TaskResult>>;
+  /**
+   * Fan out and wait, but never past the soft deadline; whatever is still
+   * running comes back as a live jobId instead of holding the caller open.
+   */
+  executeBatchBounded(
+    tasks: Array<{ deviceId: string; task: string; maxSteps?: number }>,
+    timeoutMs?: number,
+    softDeadlineMs?: number,
+  ): Promise<{
+    jobId: string;
+    done: boolean;
+    results: Record<string, TaskResult>;
+    pending: string[];
+  }>;
   /** Fan out without waiting; the caller collects via {@link DeviceBridge.getJobStatus}. */
   dispatchTasks(
     tasks: Array<{ deviceId: string; task: string; maxSteps?: number }>,

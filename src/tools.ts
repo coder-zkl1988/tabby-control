@@ -147,6 +147,34 @@ function formatTaskResult(result: TaskResult, deviceId: string): string {
   return sections.join('\n');
 }
 
+/**
+ * Render a bounded fan-out outcome. When the soft deadline hit first, the
+ * still-running devices come back as a live job with explicit collection
+ * instructions — the model follows instructions in tool RESULTS far more
+ * reliably than advice in tool descriptions (the needsInteraction resume flow
+ * is the working precedent).
+ */
+function formatBoundedOutcome(outcome: {
+  jobId: string;
+  done: boolean;
+  results: Record<string, TaskResult>;
+  pending: string[];
+}): string {
+  const settled = Object.keys(outcome.results).length
+    ? formatBatchResults(outcome.results)
+    : 'No device finished within the wait window.';
+  if (outcome.done) return settled;
+  return [
+    settled,
+    '',
+    `⏳ NOT FINISHED: ${outcome.pending.length} device(s) still running: ${outcome.pending.join(', ')}.`,
+    `The wait window closed but the phones keep working. jobId: ${outcome.jobId}`,
+    'To collect the rest: call device_job_status with this jobId (poll until done:',
+    'true, then pass includeResults). Do NOT re-dispatch these devices — the task',
+    'is already running on them. device_cancel_job stops them if the user asks.',
+  ].join('\n');
+}
+
 function formatBatchResults(results: Record<string, TaskResult>): string {
   const lines = ['Batch execution results:'];
   for (const [deviceId, result] of Object.entries(results)) {
@@ -371,14 +399,11 @@ export function createExecuteTaskAllTool(client: DeviceBridge) {
     name: 'device_execute_task_all',
     label: 'Execute Task on All Idle Devices',
     description: [
-      'ONLY FOR A HANDFUL OF PHONES AND SHORT TASKS. This waits for every device, so it',
-      'takes as long as the slowest one and a single stuck phone holds the whole call',
-      'open — and a wait beyond a few minutes gets the calling turn cut short, losing',
-      'the results of the phones that did succeed. For a larger fleet or longer work',
-      'use device_dispatch_tasks, which returns immediately.',
-      'Send the same natural language task to ALL currently idle connected devices simultaneously.',
-      'Useful for parallel operations like "open WeChat on all devices".',
-      'Returns a summary of results from each device.',
+      'Send the same natural language task to ALL currently idle connected devices',
+      'simultaneously and wait up to ~4 minutes. Devices that finish in time come',
+      'back with full results; anything still running is returned as a live jobId',
+      'to collect via device_job_status — nothing is lost either way. For fire-and-',
+      'forget dispatch (no waiting at all), use device_dispatch_tasks.',
     ].join(' '),
     parameters: {
       type: 'object',
@@ -405,11 +430,19 @@ export function createExecuteTaskAllTool(client: DeviceBridge) {
         return { content: [{ type: 'text', text: 'task is required.' }], isError: true };
       }
       try {
-        const results = await client.executeTaskAll(
-          params.task,
+        const devices = await client.listDevices();
+        const idle = devices.filter((d) => d.status === 'idle');
+        if (!idle.length) {
+          return {
+            content: [{ type: 'text', text: 'DEVICE_OFFLINE: no idle devices.' }],
+            isError: true,
+          };
+        }
+        const outcome = await client.executeBatchBounded(
+          idle.map((d) => ({ deviceId: d.deviceId, task: params.task as string })),
           Math.min(params.timeout ?? 300_000, 600_000),
         );
-        return { content: [{ type: 'text', text: formatBatchResults(results) }] };
+        return { content: [{ type: 'text', text: formatBoundedOutcome(outcome) }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return {
@@ -426,15 +459,15 @@ export function createDispatchTasksTool(client: DeviceBridge) {
     name: 'device_dispatch_tasks',
     label: 'Dispatch Tasks to Many Devices (does not wait)',
     description: [
-      'THE DEFAULT WAY TO DRIVE MORE THAN A FEW PHONES. Sends a task to each',
+      'THE DEFAULT WAY TO DRIVE PHONES. Sends a task to each',
       'listed device and returns a jobId immediately, in milliseconds, without',
       'waiting for any phone to finish. Poll device_job_status with that jobId to',
       'see how the fleet is doing, and device_cancel_job to stop what is left.',
-      'Prefer this over device_execute_batch and device_execute_task_all whenever',
-      'the work may run for more than a couple of minutes or spans more than a',
-      'handful of phones: those wait for the slowest device, so one stuck phone',
-      'holds up everything, and a long wait gets your own turn cut short — which',
-      'loses the results of the phones that did succeed.',
+      'Use this whenever two or more phones are involved, or the task repeats an',
+      'action (each / every / one by one / batch) — without judging device count',
+      'or estimating duration. The blocking alternatives wait for the slowest',
+      'device and get the calling turn aborted past roughly 6 minutes, which loses',
+      'the results of the phones that did succeed.',
     ].join(' '),
     parameters: {
       type: 'object',
@@ -607,10 +640,12 @@ export function createExecuteBatchTool(client: DeviceBridge) {
     name: 'device_execute_batch',
     label: 'Execute Different Tasks on Multiple Devices',
     description: [
-      'ONLY FOR A HANDFUL OF PHONES AND SHORT TASKS. This waits for every device, so it takes as long as the slowest one and a single stuck phone holds the whole call open — and a wait beyond a few minutes gets the calling turn cut short, losing the results of the phones that did succeed. For a larger fleet or longer work use device_dispatch_tasks, which returns immediately.',
-      'Send different natural language tasks to different devices at the same time.',
-      'Each device runs its own independent agent loop.',
-      'Example: device A opens WeChat while device B opens DingTalk.',
+      'Send different natural language tasks to different devices at the same time',
+      'and wait up to ~4 minutes. Each device runs its own independent agent loop.',
+      'Devices that finish in time come back with full results; anything still',
+      'running is returned as a live jobId to collect via device_job_status —',
+      'nothing is lost either way. For fire-and-forget dispatch (no waiting at',
+      'all), use device_dispatch_tasks.',
     ].join(' '),
     parameters: {
       type: 'object',
@@ -651,11 +686,11 @@ export function createExecuteBatchTool(client: DeviceBridge) {
         };
       }
       try {
-        const results = await client.executeBatch(
+        const outcome = await client.executeBatchBounded(
           params.tasks,
           Math.min(params.timeout ?? 300_000, 600_000),
         );
-        return { content: [{ type: 'text', text: formatBatchResults(results) }] };
+        return { content: [{ type: 'text', text: formatBoundedOutcome(outcome) }] };
       } catch (err) {
         const msg = err instanceof Error ? err.message : String(err);
         return {

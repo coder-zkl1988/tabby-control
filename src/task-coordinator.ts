@@ -10,7 +10,7 @@
  *   → resolves pending Promise → tool returns result
  */
 
-import { join } from 'path';
+import path, { join } from 'path';
 import { homedir } from 'os';
 import fs from 'fs';
 import type { WsServer } from './ws-server.js';
@@ -38,6 +38,7 @@ import {
   MediaPushResultSchema,
   AgentArtifactParamsSchema,
   TaskPolicySchema,
+  CachedTaskResultSchema,
   normalizePhoneAction,
 } from './protocol.js';
 import { randomUUID } from 'crypto';
@@ -73,6 +74,19 @@ const MAX_TRACKED_JOBS = 200;
 const JOB_TTL_MS = 12 * 60 * 60_000;
 /** Cap on failures listed in one status response, so a fleet-wide failure stays readable. */
 const MAX_LISTED_FAILURES = 50;
+
+/**
+ * Where finished results survive a process restart.
+ *
+ * The wire protocol already covers the other half of durability: a phone
+ * resends any result the desktop never acknowledged (see
+ * resendPendingTaskResults in the app), so results in flight self-heal on
+ * reconnect. But an acknowledged result exists only in this process's memory —
+ * the phone cleared it on ack — and a restart between ack and collection
+ * erases it with no way back. This file covers exactly that half.
+ */
+const DEFAULT_RESULTS_FILE = join(homedir(), '.openclaw', 'tabby-control', 'task-results.json');
+const PERSIST_DEBOUNCE_MS = 500;
 
 /**
  * Control-plane actions the phone agent must always be able to emit.
@@ -233,14 +247,18 @@ export class TaskCoordinator {
    */
   private guidanceAckIds = new Map<TaskId, TaskId>();
   private progressCallbacks: ProgressCallback[] = [];
+  private readonly resultsFile: string;
+  private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private ipcNotifier: (channel: string, data: unknown) => void;
   private wsServer: WsServer;
 
   constructor(
     wsServer: WsServer,
     ipcNotifier: (channel: string, data: unknown) => void,
+    opts?: { resultsFile?: string },
   ) {
     this.wsServer = wsServer;
+    this.resultsFile = opts?.resultsFile ?? DEFAULT_RESULTS_FILE;
     // Ensure taskData directory exists
     if (!fs.existsSync(SCREENSHOT_DIR)) {
       fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
@@ -248,6 +266,63 @@ export class TaskCoordinator {
     }
     fs.mkdirSync(TASK_ARTIFACT_DIR, { recursive: true });
     this.ipcNotifier = ipcNotifier;
+    this.loadPersistedResults();
+  }
+
+  /**
+   * Restore the result cache from disk. A missing file is the normal first
+   * boot; an unreadable one is logged and discarded rather than allowed to
+   * block startup — the cache is a recovery aid, not primary state.
+   */
+  private loadPersistedResults(): void {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(this.resultsFile, 'utf8');
+    } catch {
+      return;
+    }
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error('not an array');
+      let restored = 0;
+      for (const entry of parsed) {
+        const checked = CachedTaskResultSchema.safeParse(entry);
+        if (!checked.success) continue;
+        this.taskResults.set(checked.data.taskId as TaskId, checked.data);
+        restored += 1;
+      }
+      this.pruneTaskResults();
+      if (restored) {
+        console.log(`[tabby-control] Restored ${restored} task result(s) from ${this.resultsFile}`);
+      }
+    } catch (err) {
+      console.warn(
+        `[tabby-control] Ignoring corrupt results file ${this.resultsFile}: `
+        + `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  /** Write-behind persistence: coalesce bursts, never block the caller. */
+  private schedulePersist(): void {
+    if (this.persistTimer) return;
+    this.persistTimer = setTimeout(() => {
+      this.persistTimer = null;
+      try {
+        fs.mkdirSync(path.dirname(this.resultsFile), { recursive: true });
+        fs.writeFileSync(
+          this.resultsFile,
+          JSON.stringify([...this.taskResults.values()]),
+          'utf8',
+        );
+      } catch (err) {
+        console.warn(
+          `[tabby-control] Failed to persist task results: `
+          + `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }, PERSIST_DEBOUNCE_MS);
+    this.persistTimer.unref?.();
   }
 
   // ─── Public API ─────────────────────────────────────────────────────────────
@@ -607,6 +682,66 @@ export class TaskCoordinator {
       }
     }
     return { cancelled, failed };
+  }
+
+  /**
+   * Fan out and wait — but never past `softDeadlineMs`.
+   *
+   * The plain blocking fan-outs wait for the slowest phone, which puts the
+   * caller's lifetime in the phones' hands: an agent turn holding this call
+   * open is aborted by the session watchdog once the fleet runs long, losing
+   * even the results that had already arrived. Bounding the wait removes that
+   * coupling — the call returns what has settled, and everything still running
+   * stays collectable through the job.
+   *
+   * Two shapes of return:
+   * - `done: true` — every device settled in time; `results` is complete and
+   *   equivalent to what the unbounded fan-out would have returned
+   * - `done: false` — the deadline hit first; `results` holds the settled
+   *   devices, `pending` names the ones still running, and `jobId` is live for
+   *   device_job_status / device_cancel_job
+   */
+  async executeBatchBounded(
+    tasks: Array<{ deviceId: DeviceId; task: string; maxSteps?: number }>,
+    timeoutMs = 300_000,
+    softDeadlineMs = 240_000,
+  ): Promise<{
+    jobId: string;
+    done: boolean;
+    results: Map<DeviceId, TaskResult>;
+    pending: DeviceId[];
+  }> {
+    const { jobId } = this.dispatchTasks(tasks, timeoutMs);
+    const job = this.jobs.get(jobId);
+    if (!job) throw new Error(`JOB_NOT_FOUND: ${jobId} vanished after dispatch`);
+
+    const deadline = Date.now() + softDeadlineMs;
+    const POLL_MS = 1_000;
+    for (;;) {
+      const states = [...job.devices.values()];
+      const running = states.filter((d) => d.status === 'running');
+      if (running.length === 0 || Date.now() >= deadline) {
+        const results = new Map<DeviceId, TaskResult>();
+        for (const d of states) {
+          if (d.status === 'running') continue;
+          results.set(
+            d.deviceId,
+            d.result ?? {
+              taskId: d.taskId ?? 'unknown',
+              success: false,
+              message: d.error ?? 'unknown error',
+            },
+          );
+        }
+        return {
+          jobId,
+          done: running.length === 0,
+          results,
+          pending: running.map((d) => d.deviceId),
+        };
+      }
+      await new Promise((resolve) => setTimeout(resolve, Math.min(POLL_MS, deadline - Date.now())));
+    }
   }
 
   private pruneJobs(): void {
@@ -1270,6 +1405,7 @@ export class TaskCoordinator {
     orphaned: boolean,
   ): void {
     this.taskResults.set(taskId, { taskId, deviceId, result, completedAt: Date.now(), orphaned });
+    this.schedulePersist();
     if (orphaned) {
       console.warn(
         `[tabby-control] Result for ${taskId} arrived with no waiter — cached for recovery`,

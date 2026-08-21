@@ -389,6 +389,10 @@ async function main() {
       coordinator.executeTask(deviceId, task, timeoutMs, guidance, sessionId, maxSteps, allowedActions, allowedApps, taskPolicy),
     executeTaskAll: (task, timeoutMs) => coordinator.executeTaskAll(task, timeoutMs).then(m => Object.fromEntries(m)),
     executeBatch: (tasks, timeoutMs) => coordinator.executeBatch(tasks, timeoutMs).then(m => Object.fromEntries(m)),
+    executeBatchBounded: async (tasks, timeoutMs, softDeadlineMs) => {
+      const r = await coordinator.executeBatchBounded(tasks, timeoutMs, softDeadlineMs);
+      return { ...r, results: Object.fromEntries(r.results) };
+    },
     dispatchTasks: async (tasks, timeoutMs) => coordinator.dispatchTasks(tasks, timeoutMs),
     getJobStatus: async (jobId, opts) => coordinator.getJobStatus(jobId, opts),
     cancelJob: async (jobId) => coordinator.cancelJob(jobId),
