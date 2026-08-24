@@ -7,7 +7,7 @@
   "priority": 10,
   "author": "system",
   "activation": {
-    "intents": ["app.use.xhs", "content.search", "content.publish", "message.reply"],
+    "intents": ["app.use.xhs"],
     "taskKeywords": ["小红书", "xhs", "rednote", "笔记", "养号", "热帖", "热搜"],
     "packages": ["com.xingin.xhs", "com.xingin.xhs.international"],
     "manufacturers": ["*"],

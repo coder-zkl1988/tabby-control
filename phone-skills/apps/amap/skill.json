@@ -7,7 +7,7 @@
   "priority": 10,
   "author": "system",
   "activation": {
-    "intents": ["app.use.amap", "navigation"],
+    "intents": ["app.use.amap"],
     "taskKeywords": ["高德", "高德地图", "amap", "导航", "路线"],
     "packages": ["com.autonavi.minimap"],
     "manufacturers": ["*"],

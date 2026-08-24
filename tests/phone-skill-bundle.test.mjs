@@ -5,7 +5,10 @@ import test from 'node:test';
 const ROOT = new URL('../', import.meta.url);
 const SCREENSHOT_PRIORITY =
   '规则适用前提：始终以当前实时截图为准；页面描述与截图冲突时按截图判断，但不得绕过安全策略。';
-const ANDROID_SUBSKILL_TOKEN_BUDGET = 2_200;
+// Mirrors SkillPromptBudget in TabbyApp's LayeredSkillSelector.kt. Nothing
+// enforces that these stay in step across the two repos, so change both.
+const ANDROID_APP_TOKEN_BUDGET = 2_000;
+const ANDROID_SUBSKILL_TOKEN_BUDGET = 4_600;
 
 function estimateAndroidTokens(text) {
   return Math.max(1, Math.ceil([...text].length / 2));
@@ -19,8 +22,13 @@ test('generated phone skill bundle contains all three layers', async () => {
   const manifest = await readJson('generated/phone-skills.manifest.json');
   const bundle = await readJson('generated/phone-skills.bundle.json');
   const skills = manifest.skills;
+  const source = await readJson('phone-skills/manifest.json');
 
-  assert.equal(manifest.bundleVersion, 16);
+  // Pinning a literal here made the test go red on every legitimate bundle
+  // bump. The invariant worth guarding is that the generator carries the
+  // source version through, not what that number happens to be today.
+  assert.equal(manifest.bundleVersion, source.bundleVersion);
+  assert.equal(bundle.bundleVersion, source.bundleVersion);
   assert.deepEqual(
     [...new Set(skills.map((skill) => skill.kind))].sort(),
     ['app', 'oem', 'system'],
@@ -158,6 +166,23 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
   assert.match(instructions, /发送 \/ 保存 \/ 提交 \/ 打卡 \/ 确认添加 \/ 发起会议/);
   assert.match(approvalReport, /假勤[\s\S]*财务[\s\S]*行政[\s\S]*人事/);
   assert.match(scheduleMeeting, /智能纪要[\s\S]*知情/);
+});
+
+test('every generated app skill fits the Android runtime prompt budget', async () => {
+  const bundle = await readJson('generated/phone-skills.bundle.json');
+
+  // The phone spends the app budget one skill at a time and skips whatever no
+  // longer fits, so a skill larger than the whole category ceiling can never
+  // reach the prompt — however it is ranked, and with no error anywhere. That
+  // is how a device browsing 小红书 ended up holding another app's
+  // instructions.
+  for (const skill of bundle.skills.filter((entry) => entry.kind === 'app')) {
+    const wrapped = `${SCREENSHOT_PRIORITY}\n\n${(skill.instructions ?? '').trim()}`;
+    assert.ok(
+      estimateAndroidTokens(wrapped) <= ANDROID_APP_TOKEN_BUDGET,
+      `${skill.id} exceeds ${ANDROID_APP_TOKEN_BUDGET} tokens and can never enter the prompt`,
+    );
+  }
 });
 
 test('every generated subskill fits the Android runtime prompt budget', async () => {

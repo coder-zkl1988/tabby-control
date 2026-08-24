@@ -7,7 +7,7 @@
   "priority": 10,
   "author": "system",
   "activation": {
-    "intents": ["app.use.weixin", "message.reply"],
+    "intents": ["app.use.weixin"],
     "taskKeywords": ["微信", "wechat", "weixin"],
     "packages": ["com.tencent.mm"],
     "manufacturers": ["*"],

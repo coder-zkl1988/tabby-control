@@ -7,7 +7,7 @@
   "priority": 10,
   "author": "system",
   "activation": {
-    "intents": ["app.use.douyin", "content.search", "content.publish", "message.reply"],
+    "intents": ["app.use.douyin"],
     "taskKeywords": ["抖音", "douyin", "tiktok", "短视频", "刷视频", "直播", "抖音商城", "团购", "发抖音"],
     "packages": ["com.ss.android.ugc.aweme", "com.zhiliaoapp.musically"],
     "manufacturers": ["*"],

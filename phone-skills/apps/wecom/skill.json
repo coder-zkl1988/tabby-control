@@ -7,7 +7,7 @@
   "priority": 10,
   "author": "system",
   "activation": {
-    "intents": ["app.use.wecom", "message.reply", "content.search", "document.edit", "workflow.submit", "meeting.schedule"],
+    "intents": ["app.use.wecom"],
     "taskKeywords": ["企业微信", "企微", "wecom", "wework", "工作群", "客户联系", "客户群", "打卡", "审批", "汇报", "企业文档", "企业邮箱", "日程", "会议"],
     "packages": ["com.tencent.wework"],
     "manufacturers": ["*"],
