@@ -98,8 +98,26 @@ function formatTaskResult(result: TaskResult, deviceId: string): string {
     if (result.errorCode) sections.push(`Reason code: ${result.errorCode}`);
     if (result.totalSteps !== undefined) sections.push(`Steps before abort: ${result.totalSteps}`);
   } else if (result.status === 'stuck') {
-    sections.push(`🔁 Task stuck (no screen progress detected): ${result.message ?? 'Unknown'}`);
-    sections.push(`Retrying with different guidance (e.g. an alternative entry point) may help.`);
+    // The device reports the SAME status for two different causes: the
+    // stuck-detector (no screen change across recent actions) and simply
+    // running out of maxSteps while still making progress. Only the former
+    // is actually stuck — the latter is a healthy task that needs to keep
+    // going, and the session is kept alive on-device specifically for that.
+    // Conflating them here previously told the model to "retry with
+    // different guidance" for a task that had nothing wrong with it, so it
+    // gave up instead of resuming.
+    if (result.message?.startsWith('Task reached maximum steps')) {
+      sections.push(`⏳ Task paused (ran out of its step budget, NOT stuck): ${result.message}`);
+      sections.push(`The device was still making progress. To continue, call device_execute_task again with:`);
+      sections.push(`- deviceId: "${deviceId}"`);
+      sections.push(`- task: the original task description`);
+      sections.push(`- sessionId: "${result.taskId}"`);
+      sections.push(`- maxSteps: a larger budget if this keeps recurring`);
+      sections.push(`That resume call continues from where the device left off, not from scratch.`);
+    } else {
+      sections.push(`🔁 Task stuck (no screen progress detected): ${result.message ?? 'Unknown'}`);
+      sections.push(`Retrying with different guidance (e.g. an alternative entry point) may help.`);
+    }
     if (result.totalSteps !== undefined) sections.push(`Steps: ${result.totalSteps}`);
   } else if (result.status === 'error') {
     // Infrastructure / on-device model failure (e.g. the phone's own VLM call
