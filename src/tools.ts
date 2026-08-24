@@ -1081,11 +1081,27 @@ export function createGetStatusTool(client: DeviceBridge) {
             isError: true,
           };
         }
+        // "busy" alone cannot distinguish a phone 12 steps into the work from
+        // one that never started, which is what makes a caller cancel a
+        // healthy long task. Report the last heartbeat so progress is visible
+        // while the task is still running.
+        const progress = client.getTaskProgress
+          ? await client.getTaskProgress(params.deviceId).catch(() => null)
+          : null;
         const lines = [
           `Device: ${device.model ?? device.deviceId}`,
           `Status: ${device.status}`,
           device.currentApp ? `Current app: ${device.currentApp}` : '',
           device.currentTaskId ? `Running task: ${device.currentTaskId}` : '',
+          progress
+            ? `Progress: step ${progress.step}`
+              + (progress.progressPercent !== undefined ? ` (~${progress.progressPercent}%)` : '')
+              + (progress.action ? `, last action ${progress.action}` : '')
+              + (progress.target ? ` → ${progress.target}` : '')
+              + `, ${Math.round((Date.now() - progress.at) / 1000)}s ago`
+            : device.status === 'busy'
+              ? 'Progress: no step heartbeat yet — the task may still be starting up'
+              : '',
           device.screenWidth ? `Screen: ${device.screenWidth}x${device.screenHeight}` : '',
           device.osVersion ? `Android: ${device.osVersion}` : '',
           `Connected: ${new Date(device.connectedAt).toLocaleString()}`,

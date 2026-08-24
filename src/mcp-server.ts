@@ -385,6 +385,7 @@ async function main() {
     ping: async () => true,
     listDevices: () => Promise.resolve(wsServer.getRegistry().list()),
     getStatus: (deviceId) => Promise.resolve(coordinator.getDeviceStatus(deviceId)),
+    getTaskProgress: (deviceId) => Promise.resolve(coordinator.getTaskProgress(deviceId)),
     executeTask: (deviceId, task, timeoutMs, guidance, sessionId, maxSteps, allowedActions, allowedApps, taskPolicy) =>
       coordinator.executeTask(deviceId, task, timeoutMs, guidance, sessionId, maxSteps, allowedActions, allowedApps, taskPolicy),
     executeTaskAll: (task, timeoutMs) => coordinator.executeTaskAll(task, timeoutMs).then(m => Object.fromEntries(m)),

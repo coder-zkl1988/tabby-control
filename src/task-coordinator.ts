@@ -176,6 +176,37 @@ export interface ProgressCallback {
   ): void;
 }
 
+/** Last progress heartbeat of a task that has not returned a result yet. */
+export interface TaskProgressSnapshot {
+  taskId: string;
+  step: number;
+  action?: string;
+  target?: string;
+  progressPercent?: number;
+  /** Epoch ms of the heartbeat, so a caller can see how fresh it is. */
+  at: number;
+}
+
+/**
+ * A phone reports cancellation as "Task cancelled at step N". Recover N when
+ * the loop that produced it did not also populate `totalSteps` (the legacy
+ * on-device loop does not), so a cancelled run is never reported as 0 steps
+ * while it was in fact well underway.
+ */
+function stepFromCancelMessage(message: string | undefined): number | undefined {
+  const match = /cancelled at step (\d+)/i.exec(message ?? '');
+  if (!match) return undefined;
+  const step = Number(match[1]);
+  return Number.isFinite(step) ? step : undefined;
+}
+
+/** Append the device's own wording to a rewritten message, once. */
+function appendDeviceDetail(base: string, deviceMessage: string | undefined): string {
+  const detail = deviceMessage?.trim();
+  if (!detail || base.includes(detail)) return base;
+  return `${base} (device reported: ${detail})`;
+}
+
 // ─── Dispatch jobs ────────────────────────────────────────────────────────────
 
 export type JobDeviceStatus = 'running' | 'succeeded' | 'failed';
@@ -235,6 +266,19 @@ export class TaskCoordinator {
   private jobs = new Map<string, DispatchJob>();
   private taskArtifacts = new Map<TaskId, TaskArtifact[]>();
   private taskResults = new Map<TaskId, CachedTaskResult>();
+  /**
+   * Latest `agent.progress` heartbeat per running task.
+   *
+   * A long task reports progress every ~15s but returns nothing until it is
+   * done, so a caller polling device_get_status only ever saw "busy" — no way
+   * to tell a phone that is 12 steps into the work from one that never
+   * started. That blind spot is what makes a caller cancel a healthy run and
+   * then read the cancelled result as a failure. Keep the last heartbeat so
+   * status can report actual progress while the task is still in flight.
+   */
+  private taskProgress = new Map<TaskId, TaskProgressSnapshot>();
+  /** Last step number seen per task — survives into a cancelled result. */
+  private lastProgressStep = new Map<TaskId, number>();
   private taskCancellationSources = new Map<
     TaskId,
     'user_requested' | 'caller_disconnected'
@@ -881,6 +925,19 @@ export class TaskCoordinator {
   }
 
   /**
+   * Latest heartbeat of the task a device is currently running, if any.
+   *
+   * Lets a caller distinguish a phone that is genuinely working from one that
+   * is merely marked busy, without waiting for the task to return.
+   */
+  getTaskProgress(deviceId: string): TaskProgressSnapshot | null {
+    const taskId = this.activeTasks.get(deviceId as DeviceId)
+      ?? this.wsServer.getRegistry().get(deviceId)?.info.currentTaskId;
+    if (!taskId) return null;
+    return this.taskProgress.get(taskId as TaskId) ?? null;
+  }
+
+  /**
    * Subscribe to progress events (for UI display and Tabby decision hooks).
    */
   onProgress(callback: ProgressCallback): () => void {
@@ -1091,9 +1148,20 @@ export class TaskCoordinator {
             errorCode: cancellationSource === 'caller_disconnected'
               ? 'CALLER_DISCONNECTED'
               : 'USER_CANCELLED',
-            message: cancellationSource === 'caller_disconnected'
-              ? 'Task cancelled because the desktop/tool connection closed before completion'
-              : 'Task cancelled by user request before completion',
+            // Keep the device's own message ("Task cancelled at step N") as a
+            // suffix. It is the only place the step count survives when the
+            // phone's loop does not populate totalSteps, and without it a
+            // cancelled long task reads as "0 steps" — i.e. as if the phone
+            // never started, which is how an in-progress run gets written off
+            // as a failure.
+            message: appendDeviceDetail(
+              cancellationSource === 'caller_disconnected'
+                ? 'Task cancelled because the desktop/tool connection closed before completion'
+                : 'Task cancelled by user request before completion',
+              parsedResult.message,
+            ),
+            totalSteps: parsedResult.totalSteps ?? stepFromCancelMessage(parsedResult.message)
+              ?? this.lastProgressStep.get(taskId as TaskId),
           }
         : parsedResult;
 
@@ -1190,6 +1258,20 @@ export class TaskCoordinator {
           return;
         }
         this.activeTasks.set(deviceId, progressTaskId);
+        const progressStep = Number(params.step);
+        if (Number.isFinite(progressStep)) {
+          this.lastProgressStep.set(progressTaskId, progressStep);
+          this.taskProgress.set(progressTaskId, {
+            taskId: progressTaskId,
+            step: progressStep,
+            action: params.action ? String(params.action) : undefined,
+            target: params.target ? String(params.target) : undefined,
+            progressPercent: Number.isFinite(Number(params.progressPercent))
+              ? Number(params.progressPercent)
+              : undefined,
+            at: Date.now(),
+          });
+        }
         if (
           device
           && (device.info.status !== 'busy' || device.info.currentTaskId !== progressTaskId)
@@ -1307,6 +1389,9 @@ export class TaskCoordinator {
   private markTaskClosed(taskId: TaskId): void {
     this.closedTasks.delete(taskId);
     this.closedTasks.set(taskId, Date.now());
+    // Progress is deliberately NOT dropped here: closing precedes the result
+    // handler that recovers a cancelled task's step count from it.
+    // pruneClosedTasks clears it once the task ages out.
     this.pruneClosedTasks();
   }
 
@@ -1321,6 +1406,8 @@ export class TaskCoordinator {
       if (closedAt < cutoff) {
         this.closedTasks.delete(taskId);
         this.taskCancellationSources.delete(taskId);
+        this.taskProgress.delete(taskId);
+        this.lastProgressStep.delete(taskId);
       }
     }
     while (this.closedTasks.size > MAX_CLOSED_TASKS) {
@@ -1328,6 +1415,8 @@ export class TaskCoordinator {
       if (oldest.done) break;
       this.closedTasks.delete(oldest.value);
       this.taskCancellationSources.delete(oldest.value);
+      this.taskProgress.delete(oldest.value);
+      this.lastProgressStep.delete(oldest.value);
     }
   }
 

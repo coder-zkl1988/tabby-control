@@ -170,6 +170,10 @@ class InProcessBridge {
     return this.coordinator.getDeviceStatus(deviceId);
   }
 
+  async getTaskProgress(deviceId: string) {
+    return this.coordinator.getTaskProgress(deviceId);
+  }
+
   async executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs?: number): Promise<SubTaskResult> {
     return this.coordinator.executeSubTask(deviceId, params, timeoutMs);
   }
@@ -497,6 +501,10 @@ export default {
       async getTaskResults(query: TaskResultQuery) { return (await this._get()).getTaskResults(query); }
       async cancelTask(deviceId: string, taskId: string) { return (await this._get()).cancelTask(deviceId, taskId); }
       async getStatus(deviceId: string) { return (await this._get()).getStatus(deviceId); }
+      async getTaskProgress(deviceId: string) {
+        const bridge = await this._get();
+        return bridge.getTaskProgress ? bridge.getTaskProgress(deviceId) : null;
+      }
       async executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs?: number) {
         return (await this._get()).executeSubTask(deviceId, params, timeoutMs);
       }

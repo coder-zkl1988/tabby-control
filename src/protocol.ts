@@ -662,8 +662,24 @@ export interface DeviceBridge {
   executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs?: number): Promise<SubTaskResult>;
   resumeOrchestration(deviceId: string, params: ResumeParams): Promise<OrchestrationResult>;
   getStatus(deviceId: string): Promise<DeviceInfo | null>;
+  /**
+   * Latest progress heartbeat of the task the device is running, if any.
+   * Optional so an older bridge implementation stays compatible.
+   */
+  getTaskProgress?(deviceId: string): Promise<DeviceTaskProgress | null>;
   sendTaskStart(deviceId: string, params: TaskStartParams): Promise<void>;
   sendTaskEnd(deviceId: string, params: TaskEndParams): Promise<void>;
+}
+
+/** In-flight progress of a running device task. */
+export interface DeviceTaskProgress {
+  taskId: string;
+  step: number;
+  action?: string;
+  target?: string;
+  progressPercent?: number;
+  /** Epoch ms of the heartbeat. */
+  at: number;
 }
 
 export const PluginConfigSchema = z.object({
