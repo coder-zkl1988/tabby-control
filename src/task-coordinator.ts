@@ -89,6 +89,19 @@ const DEFAULT_RESULTS_FILE = join(homedir(), '.openclaw', 'tabby-control', 'task
 const PERSIST_DEBOUNCE_MS = 500;
 
 /**
+ * How long a dispatched task may sit at step 0 before it is failed.
+ *
+ * A phone can accept a task and never start it — its runner is wedged on a
+ * previous session — while still sending progress heartbeats. Heartbeats
+ * re-arm the idle timeout, so nothing fired until the caller's 6x hard
+ * ceiling: one such task held a device for 72 minutes with totalSteps=0 and
+ * the whole fleet round waited on it. First movement is cheap (a step takes
+ * ~20s on a healthy phone), so three minutes without step 1 means the runner
+ * is not coming.
+ */
+const FIRST_STEP_TIMEOUT_MS = 180_000;
+
+/**
  * Control-plane actions the phone agent must always be able to emit.
  *
  * An `allowedActions` whitelist exists to narrow *external effects* — clicking,
@@ -161,6 +174,10 @@ interface PendingRequest {
   deviceId: string;
   /** Re-arm the idle timeout — called on every agent.progress heartbeat. */
   rearm: () => void;
+  /** Armed until the phone reports step >= 1; null once it has moved. */
+  firstStep: ReturnType<typeof setTimeout> | null;
+  /** Called on the first heartbeat whose step >= 1 — disarms [firstStep]. */
+  markStepped: () => void;
 }
 
 // ─── ProgressCallback ────────────────────────────────────────────────────────
@@ -292,6 +309,7 @@ export class TaskCoordinator {
   private guidanceAckIds = new Map<TaskId, TaskId>();
   private progressCallbacks: ProgressCallback[] = [];
   private readonly resultsFile: string;
+  private readonly firstStepTimeoutMs: number;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private ipcNotifier: (channel: string, data: unknown) => void;
   private wsServer: WsServer;
@@ -299,10 +317,11 @@ export class TaskCoordinator {
   constructor(
     wsServer: WsServer,
     ipcNotifier: (channel: string, data: unknown) => void,
-    opts?: { resultsFile?: string },
+    opts?: { resultsFile?: string; firstStepTimeoutMs?: number },
   ) {
     this.wsServer = wsServer;
     this.resultsFile = opts?.resultsFile ?? DEFAULT_RESULTS_FILE;
+    this.firstStepTimeoutMs = opts?.firstStepTimeoutMs ?? FIRST_STEP_TIMEOUT_MS;
     // Ensure taskData directory exists
     if (!fs.existsSync(SCREENSHOT_DIR)) {
       fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
@@ -910,6 +929,7 @@ export class TaskCoordinator {
     const pending = this.pending.get(resolvedTaskId as TaskId);
     if (pending) {
       clearTimeout(pending.timeout);
+      if (pending.firstStep) clearTimeout(pending.firstStep);
       this.pending.delete(resolvedTaskId as TaskId);
       pending.reject(new Error('CANCELLED'));
     }
@@ -1187,6 +1207,7 @@ export class TaskCoordinator {
         : result;
       if (pending) {
         clearTimeout(pending.timeout);
+        if (pending.firstStep) clearTimeout(pending.firstStep);
         this.pending.delete(taskId as TaskId);
 
         if (validResult) {
@@ -1303,7 +1324,13 @@ export class TaskCoordinator {
       // Heartbeat: any progress means the task is alive — re-arm its idle
       // timeout so a long-but-active task (browsing, 养号) isn't killed by
       // waitForResult while the phone is still stepping.
-      this.pending.get(String(params.taskId ?? '') as TaskId)?.rearm();
+      {
+        const heartbeatEntry = this.pending.get(String(params.taskId ?? '') as TaskId);
+        heartbeatEntry?.rearm();
+        // Step >= 1 proves the runner actually started; step-0 heartbeats
+        // (accepted, preparing) must not disarm the first-step deadline.
+        if (heartbeatEntry && Number(params.step) >= 1) heartbeatEntry.markStepped();
+      }
 
       // Forward interaction_request to Tabby via IPC (VLM needs decision)
       const interactionReq = params.interaction_request as { message: string; screenshot?: string } | undefined;
@@ -1335,6 +1362,7 @@ export class TaskCoordinator {
         const pending = this.pending.get(taskId as TaskId);
         if (pending) {
           clearTimeout(pending.timeout);
+          if (pending.firstStep) clearTimeout(pending.firstStep);
           this.pending.delete(taskId as TaskId);
 
           pending.resolve({
@@ -1546,11 +1574,37 @@ export class TaskCoordinator {
       // ~15s. Each progress heartbeat re-arms this timer (see agent.progress
       // handler), so we only give up when the phone goes silent for timeoutMs.
       const onTimeout = () => {
+        const entry = this.pending.get(taskId);
+        if (entry?.firstStep) clearTimeout(entry.firstStep);
         this.pending.delete(taskId);
         this.taskArtifacts.delete(taskId);
         this.markTaskClosed(taskId);
         this.updateDeviceAfterTaskExit(deviceId, taskId);
         reject(new Error(`TIMEOUT: task ${taskId} made no progress for ${timeoutMs}ms`));
+      };
+
+      // Heartbeats re-arm the idle timeout, so a task that was accepted but
+      // whose runner never starts — heartbeating at step 0 — would otherwise
+      // survive until the caller's hard ceiling. Fail it as soon as "never
+      // started" is established instead.
+      const onNeverStarted = () => {
+        const entry = this.pending.get(taskId);
+        if (!entry) return;
+        clearTimeout(entry.timeout);
+        this.pending.delete(taskId);
+        this.taskArtifacts.delete(taskId);
+        this.markTaskClosed(taskId);
+        this.updateDeviceAfterTaskExit(deviceId, taskId);
+        entry.reject(new Error(
+          `NO_FIRST_STEP: device ${deviceId} accepted task ${taskId} but did not start step 1 within ${this.firstStepTimeoutMs}ms`,
+        ));
+        // Tell the phone to drop it too, or its runner stays wedged for the
+        // next dispatch as well. Best effort: it may already be offline.
+        try {
+          this.cancelTask(deviceId, taskId, 'user_requested');
+        } catch {
+          /* device gone or task unknown — nothing left to cancel */
+        }
       };
 
       this.pending.set(taskId, {
@@ -1563,6 +1617,14 @@ export class TaskCoordinator {
           if (!entry) return;
           clearTimeout(entry.timeout);
           entry.timeout = setTimeout(onTimeout, timeoutMs);
+        },
+        firstStep: setTimeout(onNeverStarted, this.firstStepTimeoutMs),
+        markStepped: () => {
+          const entry = this.pending.get(taskId);
+          if (entry?.firstStep) {
+            clearTimeout(entry.firstStep);
+            entry.firstStep = null;
+          }
         },
       });
     });

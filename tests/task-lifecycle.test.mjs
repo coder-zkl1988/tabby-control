@@ -24,7 +24,7 @@ const DEFAULT_VOCABULARY = {
 };
 
 /** Pass `actionVocabulary: null` to model a phone that reported none. */
-function createHarness({ actionVocabulary = DEFAULT_VOCABULARY, resultsFile } = {}) {
+function createHarness({ actionVocabulary = DEFAULT_VOCABULARY, resultsFile, firstStepTimeoutMs } = {}) {
   const device = {
     info: {
       deviceId: DEVICE_ID,
@@ -63,7 +63,13 @@ function createHarness({ actionVocabulary = DEFAULT_VOCABULARY, resultsFile } = 
     coordinator: new TaskCoordinator(
       wsServer,
       (channel, data) => notified.push({ channel, data }),
-      { resultsFile: resultsFile ?? join(mkdtempSync(join(tmpdir(), 'tabby-harness-')), 'r.json') },
+      {
+        resultsFile: resultsFile ?? join(mkdtempSync(join(tmpdir(), 'tabby-harness-')), 'r.json'),
+        // Real timers in these tests — pass a compressed deadline only where
+        // the zombie path itself is under test; everything else keeps the
+        // production 3-minute default, which no test outlives.
+        ...(firstStepTimeoutMs != null ? { firstStepTimeoutMs } : {}),
+      },
     ),
     device,
     notified,
@@ -1104,4 +1110,49 @@ test('an unknown task policy key is rejected instead of silently dropped', async
     ),
     /commenting/,
   );
+});
+
+test('a task heartbeating at step 0 is failed once the first-step deadline passes', async () => {
+  // The 72-minute incident: a phone accepted a task, its runner never started,
+  // and step-0 heartbeats kept re-arming the idle timeout — only the caller's
+  // 6x hard ceiling ended it. "Accepted but never moved" must fail in minutes.
+  const { coordinator, sent } = createHarness({ firstStepTimeoutMs: 150 });
+  const promise = coordinator.executeTask(DEVICE_ID, 'browse posts', 60_000);
+  const observed = promise.catch((error) => error);
+  const taskId = executeMessage(sent).params.taskId;
+
+  // Step-0 heartbeats: alive, but the runner has not moved.
+  for (let i = 0; i < 3; i += 1) {
+    coordinator.handleTaskMessage(DEVICE_ID, {
+      method: 'agent.progress',
+      params: { taskId, step: 0 },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+  }
+
+  const error = await observed;
+  assert.match(error.message, /NO_FIRST_STEP/);
+  // The phone must be told to drop it too, or its runner stays wedged.
+  assert.equal(cancelMessage(sent)?.params.taskId, taskId);
+});
+
+test('the first heartbeat at step 1 disarms the first-step deadline', async () => {
+  const { coordinator, sent } = createHarness({ firstStepTimeoutMs: 150 });
+  const promise = coordinator.executeTask(DEVICE_ID, 'browse posts', 60_000);
+  const observed = promise.catch((error) => error);
+  const taskId = executeMessage(sent).params.taskId;
+
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    method: 'agent.progress',
+    params: { taskId, step: 1 },
+  });
+  // Well past the (shortened) first-step deadline.
+  await new Promise((resolve) => setTimeout(resolve, 300));
+
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${taskId}`,
+    result: { taskId, success: true, status: 'completed', message: 'done', totalSteps: 5 },
+  });
+  const result = await observed;
+  assert.equal(result.success, true);
 });

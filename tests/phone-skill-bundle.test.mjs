@@ -8,7 +8,7 @@ const SCREENSHOT_PRIORITY =
 // Mirrors SkillPromptBudget in TabbyApp's LayeredSkillSelector.kt. Nothing
 // enforces that these stay in step across the two repos, so change both.
 const ANDROID_APP_TOKEN_BUDGET = 2_000;
-const ANDROID_SUBSKILL_TOKEN_BUDGET = 4_600;
+const ANDROID_SUBSKILL_TOKEN_BUDGET = 6_000;
 
 function estimateAndroidTokens(text) {
   return Math.max(1, Math.ceil([...text].length / 2));
