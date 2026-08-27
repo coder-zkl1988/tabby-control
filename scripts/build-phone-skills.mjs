@@ -198,6 +198,10 @@ async function loadSkill(entry) {
         subskill.requiresCapabilities ?? [],
         `${entry.id}.${subskill.id}.requiresCapabilities`,
       ),
+      // One line for the on-device subskill menu the model loads from.
+      ...(typeof subskill.summary === 'string' && subskill.summary !== ''
+        ? { summary: subskill.summary }
+        : {}),
     });
   }
 
