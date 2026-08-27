@@ -93,7 +93,7 @@ class SyntheticPhone {
           deviceId: this.deviceId,
           capabilities: {
             model: 'LoadTest', manufacturer: 'Synthetic', osVersion: 35,
-            screenWidth: 1080, screenHeight: 2400, currentApp: 'com.lobster.agent',
+            screenWidth: 1080, screenHeight: 2400, currentApp: 'com.tabby.agent',
             batteryLevel: 100, isCharging: true, isWifiConnected: true,
             supportedActions: SUPPORTED_ACTIONS, actionAliases: ACTION_ALIASES,
           },
