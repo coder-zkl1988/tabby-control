@@ -14,7 +14,10 @@
       "device_get_task_results",
       "device_cancel_task",
       "device_get_status",
-      "device_execute_skill"
+      "device_execute_skill",
+      "device_dispatch_tasks",
+      "device_job_status",
+      "device_cancel_job"
     ]
   },
   "configSchema": {

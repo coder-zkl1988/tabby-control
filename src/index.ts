@@ -581,7 +581,7 @@ export default {
       return tool;
     });
 
-    logger.info('[tabby-control] registered 8 device control tool factories (lazy bridge)');
+    logger.info('[tabby-control] registered device control tool factories (lazy bridge)');
 
     // Start server in background
     httpServer.listen(config.wsPort, '0.0.0.0', () => {
