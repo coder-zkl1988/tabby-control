@@ -3,7 +3,7 @@
   "kind": "app",
   "targetPackages": ["com.tencent.wework"],
   "name": "企业微信专家",
-  "version": 6,
+  "version": 10,
   "priority": 10,
   "author": "system",
   "activation": {
@@ -17,6 +17,14 @@
   },
   "capabilities": ["app.wecom"],
   "subskills": [
+    {
+      "id": "mass-send",
+      "name": "群发助手（1v1）",
+      "summary": "群发助手的入口、待发卡片结构与时间锁定今天的发送规则：当天卡片逐张发送，昨天及更早的卡片一律跳过",
+      "file": "references/mass-send.md",
+      "keywords": ["群发助手", "群发", "1v1", "一对一", "群发消息", "群发给客户", "检查群发"],
+      "priority": 39
+    },
     {
       "id": "moments-publish",
       "name": "客户朋友圈发表",

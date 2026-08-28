@@ -154,7 +154,7 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
     'utf8',
   );
 
-  assert.equal(wecom.version, 6);
+  assert.equal(wecom.version, 10);
   assert.deepEqual(
     wecom.subskills.map(({ id }) => id).sort(),
     [
@@ -163,6 +163,7 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
       'contacts',
       'customer',
       'docs-mail',
+      'mass-send',
       'message',
       'moments-publish',
       'multi-instance',
@@ -186,7 +187,15 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
   );
   assert.match(multiInstance, /使用以下方式打开/);
   assert.match(multiInstance, /启动指定实例的统一方式/);
-  assert.match(multiInstance, /前台包名相同/);
+  assert.match(
+    multiInstance,
+    /即使任务文本声称[\s\S]*无需切换[\s\S]*只有弹窗点击能锚定身份/,
+  );
+  assert.match(
+    multiInstance,
+    /点错是高发错误[\s\S]*不符时重新 AWAKE[\s\S]*CALL_USER/,
+  );
+  assert.match(multiInstance, /无法区分实例/);
   assert.match(multiInstance, /重开抽屉[\s\S]*勾选/);
   assert.match(multiInstance, /实例 × 企业/);
   assert.match(momentsPublish, /待你发表的/);
@@ -196,6 +205,20 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
   assert.match(momentsPublish, /图片和视频/);
   assert.match(momentsPublish, /遮罩/);
   assert.match(momentsPublish, /今天[\s\S]*出现刚发表的内容/);
+  const massSend = await readFile(
+    new URL('phone-skills/apps/wecom/references/mass-send.md', ROOT),
+    'utf8',
+  );
+  assert.match(massSend, /群发助手/);
+  assert.match(massSend, /只显示时:分/);
+  assert.match(massSend, /昨天[\s\S]*一律不点发送/);
+  assert.match(massSend, /逐张处理[\s\S]*成功标记[\s\S]*下一张/);
+  assert.match(massSend, /卡片N \| 时间标注/);
+  const androidCore = await readFile(
+    new URL('phone-skills/system/android-core/instructions.md', ROOT),
+    'utf8',
+  );
+  assert.match(androidCore, /每次执行完任务[\s\S]*返回当前应用的主页或首页/);
 });
 
 test('every generated app skill fits the Android runtime prompt budget', async () => {

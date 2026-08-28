@@ -3,7 +3,7 @@
   "kind": "system",
   "targetPackages": [],
   "name": "Android 核心操作",
-  "version": 2,
+  "version": 3,
   "priority": 100,
   "author": "system",
   "activation": {
