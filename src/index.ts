@@ -316,11 +316,18 @@ export function startHttpServer(
               // to local VLM settings). Applied to phones on their next connect.
               const cred = params.credential as VlmCredential | null | undefined;
               if (cred && cred.apiUrl && cred.apiKey && cred.model) {
+                const num = (v: unknown): number | undefined =>
+                  typeof v === 'number' && Number.isFinite(v) ? v : undefined;
                 setVlmCredential({
                   apiUrl: cred.apiUrl,
                   apiKey: cred.apiKey,
                   model: cred.model,
                   reasoningEffort: cred.reasoningEffort,
+                  temperature: num(cred.temperature),
+                  topP: num(cred.topP),
+                  frequencyPenalty: num(cred.frequencyPenalty),
+                  maxTokens: num(cred.maxTokens),
+                  contextWindow: num(cred.contextWindow),
                 });
               } else {
                 setVlmCredential(null);

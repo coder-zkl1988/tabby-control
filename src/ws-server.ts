@@ -319,13 +319,26 @@ export interface MirrorHandler {
  * apiUrl is the full OpenAI-compatible base (e.g. the new-api gateway's
  * `https://<gateway>/v1/`); the phone appends `/chat/completions`.
  * reasoningEffort is StepFun's `reasoning_effort` tier (low/medium/high),
- * forwarded as-is so the desktop controls per-step reasoning depth.
+ * forwarded as-is so the desktop controls per-step reasoning depth; the
+ * sentinel "none" tells the phone to omit the parameter entirely (for
+ * non-StepFun models behind strict endpoints).
+ * temperature/topP/frequencyPenalty/maxTokens are optional sampling
+ * overrides; fields left absent keep the phone's step-3.7-flash-tuned
+ * defaults, so switching models never requires an app rebuild.
+ * contextWindow (tokens) lets the phone adapt its history-compression
+ * policy — large windows relax or disable compression so the model sees
+ * full uncompressed step history; absent = phone default policy.
  */
 export interface VlmCredential {
   apiUrl: string;
   apiKey: string;
   model: string;
   reasoningEffort?: string;
+  temperature?: number;
+  topP?: number;
+  frequencyPenalty?: number;
+  maxTokens?: number;
+  contextWindow?: number;
 }
 
 export class WsServer {
