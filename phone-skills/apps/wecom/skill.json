@@ -3,7 +3,7 @@
   "kind": "app",
   "targetPackages": ["com.tencent.wework"],
   "name": "企业微信专家",
-  "version": 1,
+  "version": 6,
   "priority": 10,
   "author": "system",
   "activation": {
@@ -17,6 +17,22 @@
   },
   "capabilities": ["app.wecom"],
   "subskills": [
+    {
+      "id": "moments-publish",
+      "name": "客户朋友圈发表",
+      "summary": "客户朋友圈的两个入口、指派横幅的去发表抽屉流程，以及桌面任务携带文案图片时的自发发表全流程（含底部弹窗与 Tabby 相册选图）",
+      "file": "references/moments-publish.md",
+      "keywords": ["朋友圈", "客户朋友圈", "发朋友圈", "发表朋友圈", "去发表", "发到客户的朋友圈"],
+      "priority": 39
+    },
+    {
+      "id": "multi-instance",
+      "name": "多实例与企业遍历",
+      "summary": "应用分身多实例的发现与启动、企业切换，以及“按企业执行”任务的逐实例逐企业遍历协议",
+      "file": "references/multi-instance.md",
+      "keywords": ["分身", "应用分身", "双开", "多开", "多个企业微信", "企业微信分身", "切换企业", "每个企业", "所有企业", "企业遍历", "逐个企业", "按企业执行"],
+      "priority": 44
+    },
     {
       "id": "message",
       "name": "消息与群聊",

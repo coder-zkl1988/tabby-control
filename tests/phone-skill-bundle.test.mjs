@@ -145,8 +145,16 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
     new URL('phone-skills/apps/wecom/references/schedule-meeting.md', ROOT),
     'utf8',
   );
+  const multiInstance = await readFile(
+    new URL('phone-skills/apps/wecom/references/multi-instance.md', ROOT),
+    'utf8',
+  );
+  const momentsPublish = await readFile(
+    new URL('phone-skills/apps/wecom/references/moments-publish.md', ROOT),
+    'utf8',
+  );
 
-  assert.equal(wecom.version, 1);
+  assert.equal(wecom.version, 6);
   assert.deepEqual(
     wecom.subskills.map(({ id }) => id).sort(),
     [
@@ -156,6 +164,8 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
       'customer',
       'docs-mail',
       'message',
+      'moments-publish',
+      'multi-instance',
       'schedule-meeting',
       'search',
       'workbench-account',
@@ -166,6 +176,26 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
   assert.match(instructions, /发送 \/ 保存 \/ 提交 \/ 打卡 \/ 确认添加 \/ 发起会议/);
   assert.match(approvalReport, /假勤[\s\S]*财务[\s\S]*行政[\s\S]*人事/);
   assert.match(scheduleMeeting, /智能纪要[\s\S]*知情/);
+  assert.match(
+    instructions,
+    /任务涉及分身、多个实例或“按企业执行”时[\s\S]*多实例与企业遍历/,
+  );
+  assert.match(
+    instructions,
+    /任务明确要求“每个企业都执行”时[\s\S]*自主切换企业并在完成后切回/,
+  );
+  assert.match(multiInstance, /使用以下方式打开/);
+  assert.match(multiInstance, /启动指定实例的统一方式/);
+  assert.match(multiInstance, /前台包名相同/);
+  assert.match(multiInstance, /重开抽屉[\s\S]*勾选/);
+  assert.match(multiInstance, /实例 × 企业/);
+  assert.match(momentsPublish, /待你发表的/);
+  assert.match(momentsPublish, /按时间先后[\s\S]*最早[\s\S]*发表/);
+  assert.match(momentsPublish, /照片[\s\S]*拍摄[\s\S]*视频号动态[\s\S]*从微盘选择[\s\S]*网页/);
+  assert.match(momentsPublish, /「Tabby」相册/);
+  assert.match(momentsPublish, /图片和视频/);
+  assert.match(momentsPublish, /遮罩/);
+  assert.match(momentsPublish, /今天[\s\S]*出现刚发表的内容/);
 });
 
 test('every generated app skill fits the Android runtime prompt budget', async () => {
