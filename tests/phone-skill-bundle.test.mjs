@@ -228,6 +228,11 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
   // The timestamp sits above the card it belongs to, so reading it off the
   // card above sends yesterday's message to customers — an observed error.
   assert.match(massSend, /时间标注属于它下方那张卡片/);
+  // Mass-send is a chat-style timeline: newest at the BOTTOM, the opposite of
+  // the moments drawer. Carrying the moments rule over unchanged would scroll
+  // the wrong way and miss today's cards entirely.
+  assert.match(massSend, /最早在最上、最新在最底部/);
+  assert.match(massSend, /不要一路翻到列表最顶部/);
   const androidCore = await readFile(
     new URL('phone-skills/system/android-core/instructions.md', ROOT),
     'utf8',
