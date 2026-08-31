@@ -200,6 +200,10 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
   assert.match(multiInstance, /实例 × 企业/);
   assert.match(momentsPublish, /待你发表的/);
   assert.match(momentsPublish, /按时间先后[\s\S]*最早[\s\S]*发表/);
+  // The list is newest-first and usually longer than one screen, so the
+  // bottom-most VISIBLE card is not the earliest one. Starting from whatever
+  // happens to be on screen publishes out of order — an observed error.
+  assert.match(momentsPublish, /先滑到抽屉最底部/);
   assert.match(momentsPublish, /照片[\s\S]*拍摄[\s\S]*视频号动态[\s\S]*从微盘选择[\s\S]*网页/);
   assert.match(momentsPublish, /「Tabby」相册/);
   assert.match(momentsPublish, /图片和视频/);
@@ -213,7 +217,10 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
   assert.match(massSend, /只显示时:分/);
   assert.match(massSend, /昨天[\s\S]*一律不点发送/);
   assert.match(massSend, /逐张处理[\s\S]*成功标记[\s\S]*下一张/);
-  assert.match(massSend, /卡片N \| 时间标注/);
+  assert.match(massSend, /卡片N \| 上方时间标注/);
+  // The timestamp sits above the card it belongs to, so reading it off the
+  // card above sends yesterday's message to customers — an observed error.
+  assert.match(massSend, /时间标注属于它下方那张卡片/);
   const androidCore = await readFile(
     new URL('phone-skills/system/android-core/instructions.md', ROOT),
     'utf8',
