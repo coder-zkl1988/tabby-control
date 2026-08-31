@@ -199,11 +199,18 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
   assert.match(multiInstance, /重开抽屉[\s\S]*勾选/);
   assert.match(multiInstance, /实例 × 企业/);
   assert.match(momentsPublish, /待你发表的/);
-  assert.match(momentsPublish, /按时间先后[\s\S]*最早[\s\S]*发表/);
-  // The list is newest-first and usually longer than one screen, so the
-  // bottom-most VISIBLE card is not the earliest one. Starting from whatever
-  // happens to be on screen publishes out of order — an observed error.
-  assert.match(momentsPublish, /先滑到抽屉最底部/);
+  // Ordering within the publishable set is still oldest-first; the today-lock
+  // narrows WHICH cards qualify, it does not change the order they go out in.
+  assert.match(momentsPublish, /从最早到最新/);
+  // Newest-first plus the today-lock means today's cards sit at the top and
+  // only the today/pre-today boundary matters. Scrolling to the very bottom
+  // just burns steps on expired cards — one run hit its step cap doing it.
+  assert.match(momentsPublish, /是否滑动，看第一屏有没有出现分界/);
+  assert.match(momentsPublish, /不要一路滑到列表最底部/);
+  // Assigned moments expire: publishing yesterday's card today pushes a
+  // stale campaign to customers, same hazard the mass-send today-lock covers.
+  assert.match(momentsPublish, /只发表当天的卡片/);
+  assert.match(momentsPublish, /早于今天的日期[\s\S]*一律不发表/);
   assert.match(momentsPublish, /照片[\s\S]*拍摄[\s\S]*视频号动态[\s\S]*从微盘选择[\s\S]*网页/);
   assert.match(momentsPublish, /「Tabby」相册/);
   assert.match(momentsPublish, /图片和视频/);
