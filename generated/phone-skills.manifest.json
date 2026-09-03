@@ -1,9 +1,9 @@
 {
   "schemaVersion": 2,
-  "bundleVersion": 43,
+  "bundleVersion": 47,
   "minAppVersion": "1.0.15",
   "digestAlgorithm": "SHA-256",
-  "digest": "9f2eee490dd7ab3eab6e2df86cb6c20ac64ee790076e0e6aacd8f268bc02462b",
+  "digest": "e0e66ba30ce721943826fbb571e23f6342bc6233ffff6d4860d7126160bb5fe4",
   "skills": [
     {
       "id": "android-core-v1",
