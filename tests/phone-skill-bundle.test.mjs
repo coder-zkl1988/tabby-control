@@ -154,7 +154,7 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
     'utf8',
   );
 
-  assert.equal(wecom.version, 10);
+  assert.equal(wecom.version, 12);
   assert.deepEqual(
     wecom.subskills.map(({ id }) => id).sort(),
     [
@@ -191,9 +191,11 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
     multiInstance,
     /即使任务文本声称[\s\S]*无需切换[\s\S]*只有弹窗点击能锚定身份/,
   );
+  // v48: 不符出口从 CALL_USER 收紧为 ABORT（CALL_USER 超时注入会允许
+  // “自行决策继续”，等于给串号开绿灯——2026-09-04 审计救回项）。
   assert.match(
     multiInstance,
-    /点错是高发错误[\s\S]*不符时重新 AWAKE[\s\S]*CALL_USER/,
+    /点错是高发错误[\s\S]*不符时重新 AWAKE[\s\S]*仍不符则 [`]ABORT/,
   );
   assert.match(multiInstance, /无法区分实例/);
   assert.match(multiInstance, /重开抽屉[\s\S]*勾选/);
@@ -223,7 +225,8 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
   assert.match(massSend, /群发助手/);
   assert.match(massSend, /只显示时:分/);
   assert.match(massSend, /昨天[\s\S]*一律不点发送/);
-  assert.match(massSend, /逐张处理[\s\S]*成功标记[\s\S]*下一张/);
+  // v46-v48: 逐张发送必须重新截图确认卡片从待发列表消失（强于旧的"成功标记"措辞）。
+  assert.match(massSend, /逐张处理[\s\S]*已从待发列表消失[\s\S]*下一张/);
   assert.match(massSend, /卡片N \| 上方时间标注/);
   // The timestamp sits above the card it belongs to, so reading it off the
   // card above sends yesterday's message to customers — an observed error.
@@ -237,7 +240,8 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
     new URL('phone-skills/system/android-core/instructions.md', ROOT),
     'utf8',
   );
-  assert.match(androidCore, /每次执行完任务[\s\S]*返回当前应用的主页或首页/);
+  // v44: 任务结束回系统桌面（一步 HOME）而非应用首页，避免停留在半完成流程里。
+  assert.match(androidCore, /每次执行完任务[\s\S]*回到手机系统桌面[\s\S]*`HOME`/);
 });
 
 test('every generated app skill fits the Android runtime prompt budget', async () => {

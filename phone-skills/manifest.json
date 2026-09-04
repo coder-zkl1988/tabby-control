@@ -1,7 +1,7 @@
 {
   "$schema": "./schema/manifest.schema.json",
   "schemaVersion": 2,
-  "bundleVersion": 47,
+  "bundleVersion": 50,
   "minAppVersion": "1.0.15",
   "skills": [
     {
