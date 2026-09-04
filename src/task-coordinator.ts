@@ -42,6 +42,7 @@ import {
   normalizePhoneAction,
 } from './protocol.js';
 import { randomUUID } from 'crypto';
+import { ReportAuditor } from './report-audit.js';
 
 // Screenshots go under ~/.openclaw/media/ which is whitelisted for Feishu media sending
 const SCREENSHOT_DIR = join(homedir(), '.openclaw', 'media', 'tabby-screenshots');
@@ -283,6 +284,7 @@ export class TaskCoordinator {
   private jobs = new Map<string, DispatchJob>();
   private taskArtifacts = new Map<TaskId, TaskArtifact[]>();
   private taskResults = new Map<TaskId, CachedTaskResult>();
+  private readonly reportAuditor = new ReportAuditor();
   /**
    * Latest `agent.progress` heartbeat per running task.
    *
@@ -1202,9 +1204,21 @@ export class TaskCoordinator {
 
       const artifacts = this.taskArtifacts.get(taskId as TaskId) ?? [];
       this.taskArtifacts.delete(taskId as TaskId);
-      const enriched = validResult
+      let enriched = validResult
         ? this.enrichResultWithScreenshot(taskId as TaskId, validResult, artifacts)
         : result;
+      // 机械校验（账本算术 + 回执比对 + 当日同卡去重）必须在 resolve 之前：
+      // RPC 同步返回与结果缓存要拿到同一份带「[桌面校验]」告警的消息。
+      if (validResult) {
+        const audited = enriched as TaskResult;
+        const warnings = this.reportAuditor.audit(deviceId, audited.message);
+        if (warnings.length > 0) {
+          enriched = { ...audited, message: `${audited.message ?? ''}\n${warnings.join('\n')}` };
+          console.warn(
+            `[tabby-control] Report audit ${deviceId} ${taskId}: ${warnings.map(w => w.replace('[桌面校验] ', '')).join(' | ')}`,
+          );
+        }
+      }
       if (pending) {
         clearTimeout(pending.timeout);
         if (pending.firstStep) clearTimeout(pending.firstStep);
