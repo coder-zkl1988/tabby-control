@@ -216,6 +216,9 @@ export const ConfirmationPolicySchema = z.object({
   login: z.enum(['required', 'forbidden']).optional(),
   publish: z.enum(['required', 'forbidden']).optional(),
   payment: z.literal('forbidden').optional(),
+  // 评论（xhs-ops P3-1）：默认 forbidden；只有桌面的评论任务传 allowed，且必须
+  // 同时给 TaskPolicy.commentAllowlist——手机端没有白名单不会放宽。
+  comment: z.enum(['forbidden', 'allowed']).optional(),
 }).strict();
 
 export const TaskPolicySchema = z.object({
@@ -229,6 +232,8 @@ export const TaskPolicySchema = z.object({
   allowedActions: z.array(z.string().min(1)).optional(),
   allowedApps: z.array(z.string().min(1)).optional(),
   confirmationPolicy: ConfirmationPolicySchema.optional(),
+  /** 人工审核通过、允许手机逐字 TYPE 的评论原文；≤5 条、每条 ≤30 字。 */
+  commentAllowlist: z.array(z.string().min(1).max(30)).max(5).optional(),
 }).strict().superRefine((policy, ctx) => {
   const installOperation =
     policy.operationClass === 'app.install' || policy.operationClass === 'app.update';
@@ -244,6 +249,16 @@ export const TaskPolicySchema = z.object({
       code: z.ZodIssueCode.custom,
       path: ['allowedAppRoles'],
       message: '安装任务不能允许 browser 角色',
+    });
+  }
+  if (
+    policy.confirmationPolicy?.comment === 'allowed' &&
+    (policy.commentAllowlist?.length ?? 0) === 0
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['commentAllowlist'],
+      message: '允许评论必须附带 commentAllowlist（人工审核通过的原文）',
     });
   }
 });
