@@ -56,9 +56,9 @@
    - 前 3–6 行人读汇报：模式与关键词、浏览 x/n、互动计数、异常、一句观察（内容与账号定位是否匹配、结果页以什么类型内容为主）。
    - **最后一行**必须是 `RECORD_JSON:` 紧跟一行紧凑 JSON，单行、双引号、不加注释、不加句号，之后不再写任何字：
 ```
-RECORD_JSON:{"v":1,"mode":"search","keyword":"亲子酒店","planned":5,"browsed":5,"skipped":1,"interactions":{"like":1,"collect":0,"follow":0},"anomalies":[],"posts":[{"title":"北京周边亲子酒店测评","author":"某某","action":"like","commentsRead":3}],"observation":"结果以酒店测评为主，与定位匹配"}
+RECORD_JSON:{"v":1,"mode":"search","keyword":"亲子酒店","planned":5,"browsed":5,"skipped":1,"interactions":{"like":1,"collect":0,"follow":0},"anomalies":[],"posts":[{"title":"北京周边亲子酒店测评","author":"某某","action":"like","commentsRead":3,"commentWorthy":true,"summary":"测评了三家北京周边带儿童乐园的酒店，价格和早餐都写了"}],"observation":"结果以酒店测评为主，与定位匹配"}
 ```
-字段规则：`mode` 取 `search`/`home`（首页模式 `keyword` 写 `null`）；`planned` 是任务目标篇数；`browsed` 是真正计数的篇数（与账本一致）；`skipped` 是点进去但没计数的篇数；`interactions` 只填已确认成功的次数；`anomalies` 是 `{"type":"…","detail":"…"}` 数组，没有就 `[]`；`posts` 每篇一条，`title` 不超过 20 字，`action` 取 `like`/`collect`/`follow`/`none`（多个动作写主要的一个），`commentsRead` 是实际看到的评论条数；`observation` 一句话。
+字段规则：`mode` 取 `search`/`home`（首页模式 `keyword` 写 `null`）；`planned` 是任务目标篇数；`browsed` 是真正计数的篇数（与账本一致）；`skipped` 是点进去但没计数的篇数；`interactions` 只填已确认成功的次数；`anomalies` 是 `{"type":"…","detail":"…"}` 数组，没有就 `[]`；`posts` 每篇一条，`title` 不超过 20 字，`action` 取 `like`/`collect`/`follow`/`none`（多个动作写主要的一个），`commentsRead` 是实际看到的评论条数；`commentWorthy` 是"这帖值不值得以后评一句"的**标注**（图文、与账号定位强相关、评论区氛围正向、不是广告/争议帖 → `true`，其余 `false`；**只标注，本任务绝不评论**）；`summary` 是正文一句话（≤60 字，说清帖子讲了什么，视频帖无正文写 `""`）；`observation` 一句话。
 3. 数字必须对账：`browsed` = 账本 `已浏览` 的 x；`interactions` = 账本里的赞/藏/关计数；对不上先改账本再写 JSON。**禁止把没做的互动或没看完的帖子写进 JSON**。
 
 ## 七、防卡死与节奏

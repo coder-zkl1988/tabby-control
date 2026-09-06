@@ -6,7 +6,7 @@
     "com.xingin.xhs.international"
   ],
   "name": "小红书专家",
-  "version": 33,
+  "version": 34,
   "priority": 10,
   "author": "system",
   "activation": {
@@ -133,6 +133,21 @@
         "逐篇浏览",
         "结构化记录",
         "本次最多"
+      ]
+    },
+    {
+      "id": "comment",
+      "name": "评论任务",
+      "file": "references/comment.md",
+      "priority": 45,
+      "summary": "桌面端在运营逐条批准后下发的评论任务：按标题+作者找到指定笔记，逐字发送任务给出的审核原文（手机策略只放行这一条），最后一行输出 COMMENT_JSON",
+      "keywords": [
+        "评论任务",
+        "小红书评论任务",
+        "COMMENT_JSON",
+        "审核通过的评论",
+        "审核原文",
+        "发一条评论"
       ]
     },
     {
