@@ -1,8 +1,76 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import test from 'node:test';
 
-import { DeviceRegistry } from '../dist/ws-server.js';
+import WebSocket from 'ws';
+
+import { DeviceRegistry, WsServer } from '../dist/ws-server.js';
 import { createDeviceListTool } from '../dist/tools.js';
+
+class FakePhoneSocket extends EventEmitter {
+  readyState = WebSocket.OPEN;
+  sent = [];
+  terminated = false;
+
+  send(payload) {
+    this.sent.push(payload);
+  }
+
+  ping() {}
+
+  close() {
+    this.readyState = WebSocket.CLOSED;
+    this.emit('close');
+  }
+
+  terminate() {
+    this.terminated = true;
+    this.close();
+  }
+}
+
+test('authenticated pong activity keeps public lastSeen fresh while real inactivity still terminates', () => {
+  const originalNow = Date.now;
+  const originalSetInterval = globalThis.setInterval;
+  const originalClearInterval = globalThis.clearInterval;
+  let now = 1_000;
+  let heartbeatTick;
+
+  Date.now = () => now;
+  globalThis.setInterval = (callback) => {
+    heartbeatTick = callback;
+    return 1;
+  };
+  globalThis.clearInterval = () => {};
+
+  try {
+    const server = new WsServer(0, () => {});
+    const socket = new FakePhoneSocket();
+    server.wss.emit('connection', socket, {});
+    socket.emit(
+      'message',
+      Buffer.from(JSON.stringify({ deviceId: 'phone-heartbeat' })),
+      false,
+    );
+
+    now = 16_000;
+    socket.emit('pong');
+    assert.equal(server.getRegistry().get('phone-heartbeat').info.lastSeen, now);
+
+    now = 31_000;
+    socket.emit('pong');
+    assert.equal(server.getRegistry().get('phone-heartbeat').info.lastSeen, now);
+    assert.equal(socket.terminated, false);
+
+    now = 61_001;
+    heartbeatTick();
+    assert.equal(socket.terminated, true);
+  } finally {
+    Date.now = originalNow;
+    globalThis.setInterval = originalSetInterval;
+    globalThis.clearInterval = originalClearInterval;
+  }
+});
 
 test('sparse status updates preserve static device capabilities', () => {
   const registry = new DeviceRegistry();

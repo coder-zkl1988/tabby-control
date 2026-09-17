@@ -1,9 +1,9 @@
 {
   "schemaVersion": 2,
-  "bundleVersion": 53,
+  "bundleVersion": 58,
   "minAppVersion": "1.0.15",
   "digestAlgorithm": "SHA-256",
-  "digest": "1183328935e26eab54441ad36ce90103b9e40d414b6cf11708ca58159afa8ebe",
+  "digest": "c1c18f751de4e54bc68c03c9318b2642a9108dc2b1f4d87d19df46558f6af652",
   "skills": [
     {
       "id": "android-core-v1",
@@ -82,7 +82,7 @@
     {
       "id": "wecom-v1",
       "kind": "app",
-      "version": 12,
+      "version": 14,
       "targetPackages": [
         "com.tencent.wework"
       ]

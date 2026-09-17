@@ -1,6 +1,7 @@
 import type { TaskCoordinator } from './task-coordinator.js';
 import type { OrchestrationResult, SubTaskExecuteParams, SkillHint } from './protocol.js';
 import type { SkillStep, Handler } from './skill-types.js';
+import { classifyWecomAuditRequirement } from './report-audit.js';
 
 interface SubTaskPlan {
   subtaskId: string;
@@ -41,6 +42,11 @@ export class Orchestrator {
     handlers: Handler[] = [],
     timeoutMs = 600_000,
   ): Promise<OrchestrationResult> {
+    if (classifyWecomAuditRequirement(task)) {
+      throw new Error(
+        'WECOM_AUDIT_UNSUPPORTED_ENTRY: assigned WeCom execution requires agent.execute audit receipts',
+      );
+    }
     const taskId = `t_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     const completed: string[] = [];
     const failed: string[] = [];

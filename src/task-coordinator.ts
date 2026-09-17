@@ -42,7 +42,14 @@ import {
   normalizePhoneAction,
 } from './protocol.js';
 import { randomUUID } from 'crypto';
-import { ReportAuditor } from './report-audit.js';
+import {
+  ReportAuditor,
+  appendReportAuditWarnings,
+  isDeviceGateWarning,
+  judgeReport,
+  classifyWecomAuditRequirement,
+  type WecomAuditRequirement,
+} from './report-audit.js';
 
 // Screenshots go under ~/.openclaw/media/ which is whitelisted for Feishu media sending
 const SCREENSHOT_DIR = join(homedir(), '.openclaw', 'media', 'tabby-screenshots');
@@ -88,6 +95,15 @@ const MAX_LISTED_FAILURES = 50;
  */
 const DEFAULT_RESULTS_FILE = join(homedir(), '.openclaw', 'tabby-control', 'task-results.json');
 const PERSIST_DEBOUNCE_MS = 500;
+const WECOM_REQUIREMENT_TTL_MS = 48 * 60 * 60_000;
+const MAX_WECOM_AUDIT_REQUIREMENTS = 8_000;
+
+interface PersistedWecomAuditRequirement {
+  taskId: TaskId;
+  deviceId: DeviceId;
+  createdAt: number;
+  requirement: WecomAuditRequirement;
+}
 
 /**
  * How long a dispatched task may sit at step 0 before it is failed.
@@ -101,6 +117,7 @@ const PERSIST_DEBOUNCE_MS = 500;
  * is not coming.
  */
 const FIRST_STEP_TIMEOUT_MS = 180_000;
+const CANCEL_ACK_TIMEOUT_MS = 15_000;
 
 /**
  * Control-plane actions the phone agent must always be able to emit.
@@ -179,6 +196,16 @@ interface PendingRequest {
   firstStep: ReturnType<typeof setTimeout> | null;
   /** Called on the first heartbeat whose step >= 1 — disarms [firstStep]. */
   markStepped: () => void;
+  /** A cancel was sent; only the phone's terminal result may now settle this task. */
+  cancelling?: boolean;
+}
+
+interface PendingCancellation {
+  promise: Promise<TaskResult>;
+  resolve: (value: TaskResult) => void;
+  reject: (reason: Error) => void;
+  timeout: ReturnType<typeof setTimeout>;
+  deviceId: string;
 }
 
 // ─── ProgressCallback ────────────────────────────────────────────────────────
@@ -285,6 +312,7 @@ export class TaskCoordinator {
   private taskArtifacts = new Map<TaskId, TaskArtifact[]>();
   private taskResults = new Map<TaskId, CachedTaskResult>();
   private readonly reportAuditor = new ReportAuditor();
+  private wecomAuditRequirements = new Map<TaskId, PersistedWecomAuditRequirement>();
   /**
    * Latest `agent.progress` heartbeat per running task.
    *
@@ -302,6 +330,7 @@ export class TaskCoordinator {
     TaskId,
     'user_requested' | 'caller_disconnected'
   >();
+  private pendingCancellations = new Map<TaskId, PendingCancellation>();
   /**
    * Transport task id of a dispatched guidance resume → the original task it
    * carries guidance for. The phone replies to the transport id with a bare
@@ -311,7 +340,9 @@ export class TaskCoordinator {
   private guidanceAckIds = new Map<TaskId, TaskId>();
   private progressCallbacks: ProgressCallback[] = [];
   private readonly resultsFile: string;
+  private readonly wecomRequirementsFile: string;
   private readonly firstStepTimeoutMs: number;
+  private readonly cancelAckTimeoutMs: number;
   private persistTimer: ReturnType<typeof setTimeout> | null = null;
   private ipcNotifier: (channel: string, data: unknown) => void;
   private wsServer: WsServer;
@@ -319,11 +350,17 @@ export class TaskCoordinator {
   constructor(
     wsServer: WsServer,
     ipcNotifier: (channel: string, data: unknown) => void,
-    opts?: { resultsFile?: string; firstStepTimeoutMs?: number },
+    opts?: {
+      resultsFile?: string;
+      firstStepTimeoutMs?: number;
+      cancelAckTimeoutMs?: number;
+    },
   ) {
     this.wsServer = wsServer;
     this.resultsFile = opts?.resultsFile ?? DEFAULT_RESULTS_FILE;
+    this.wecomRequirementsFile = `${this.resultsFile}.wecom-requirements.json`;
     this.firstStepTimeoutMs = opts?.firstStepTimeoutMs ?? FIRST_STEP_TIMEOUT_MS;
+    this.cancelAckTimeoutMs = opts?.cancelAckTimeoutMs ?? CANCEL_ACK_TIMEOUT_MS;
     // Ensure taskData directory exists
     if (!fs.existsSync(SCREENSHOT_DIR)) {
       fs.mkdirSync(SCREENSHOT_DIR, { recursive: true });
@@ -331,7 +368,120 @@ export class TaskCoordinator {
     }
     fs.mkdirSync(TASK_ARTIFACT_DIR, { recursive: true });
     this.ipcNotifier = ipcNotifier;
+    this.loadPersistedWecomRequirements();
     this.loadPersistedResults();
+  }
+
+  private loadPersistedWecomRequirements(): void {
+    let raw: string;
+    try {
+      raw = fs.readFileSync(this.wecomRequirementsFile, 'utf8');
+    } catch {
+      return;
+    }
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (!Array.isArray(parsed)) throw new Error('not an array');
+      for (const value of parsed) {
+        const record = this.parsePersistedWecomRequirement(value);
+        if (record) this.wecomAuditRequirements.set(record.taskId, record);
+      }
+      this.pruneWecomAuditRequirements();
+    } catch (err) {
+      console.warn(
+        `[tabby-control] Ignoring corrupt WeCom requirements file ${this.wecomRequirementsFile}: `
+        + `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+
+  private parsePersistedWecomRequirement(value: unknown): PersistedWecomAuditRequirement | null {
+    if (!value || typeof value !== 'object') return null;
+    const record = value as Record<string, unknown>;
+    const requirement = record.requirement;
+    if (!requirement || typeof requirement !== 'object') return null;
+    const requirementRecord = requirement as Record<string, unknown>;
+    const requiredChannels = requirementRecord.requiredChannels;
+    if (typeof record.taskId !== 'string'
+      || typeof record.deviceId !== 'string'
+      || typeof record.createdAt !== 'number'
+      || !Number.isFinite(record.createdAt)
+      || typeof requirementRecord.date !== 'string'
+      || !/^\d{4}-\d{2}-\d{2}$/.test(requirementRecord.date)
+      || !Array.isArray(requiredChannels)
+      || requiredChannels.length === 0
+      || requiredChannels.some((channel) => channel !== 'mass_send' && channel !== 'moments')
+      || new Set(requiredChannels).size !== requiredChannels.length) {
+      return null;
+    }
+    const requiredInstanceKinds = requirementRecord.requiredInstanceKinds;
+    if (requiredInstanceKinds !== undefined
+      && (!Array.isArray(requiredInstanceKinds)
+        || requiredInstanceKinds.some((kind) => kind !== 'main' && kind !== 'clone'))) {
+      return null;
+    }
+    const requiredInstances = requirementRecord.requiredInstances;
+    if (requiredInstances !== undefined
+      && (!Array.isArray(requiredInstances)
+        || requiredInstances.some((instance) => typeof instance !== 'string'))) {
+      return null;
+    }
+    return {
+      taskId: record.taskId as TaskId,
+      deviceId: record.deviceId,
+      createdAt: record.createdAt,
+      requirement: {
+        date: requirementRecord.date,
+        requiredChannels: requiredChannels as WecomAuditRequirement['requiredChannels'],
+        requiredInstanceKinds: requiredInstanceKinds as WecomAuditRequirement['requiredInstanceKinds'],
+        requiredInstances: requiredInstances as string[] | undefined,
+      },
+    };
+  }
+
+  private pruneWecomAuditRequirements(): void {
+    const cutoff = Date.now() - WECOM_REQUIREMENT_TTL_MS;
+    for (const [taskId, record] of this.wecomAuditRequirements) {
+      if (record.createdAt < cutoff) this.wecomAuditRequirements.delete(taskId);
+    }
+    while (this.wecomAuditRequirements.size > MAX_WECOM_AUDIT_REQUIREMENTS) {
+      const oldest = this.wecomAuditRequirements.keys().next();
+      if (oldest.done) break;
+      this.wecomAuditRequirements.delete(oldest.value);
+    }
+  }
+
+  private persistWecomAuditRequirements(): void {
+    this.pruneWecomAuditRequirements();
+    fs.mkdirSync(path.dirname(this.wecomRequirementsFile), { recursive: true });
+    const temporaryFile = `${this.wecomRequirementsFile}.${process.pid}.tmp`;
+    try {
+      fs.writeFileSync(
+        temporaryFile,
+        JSON.stringify([...this.wecomAuditRequirements.values()]),
+        'utf8',
+      );
+      fs.renameSync(temporaryFile, this.wecomRequirementsFile);
+    } catch (error) {
+      try {
+        fs.unlinkSync(temporaryFile);
+      } catch {
+        // The temporary file may not have been created.
+      }
+      throw error;
+    }
+  }
+
+  private removeWecomAuditRequirement(taskId: TaskId): void {
+    if (!this.wecomAuditRequirements.delete(taskId)) return;
+    try {
+      this.persistWecomAuditRequirements();
+    } catch (error) {
+      console.warn(
+        `[tabby-control] Failed to persist removal of WeCom audit requirement ${taskId}: `
+        + `${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   /**
@@ -357,6 +507,11 @@ export class TaskCoordinator {
         restored += 1;
       }
       this.pruneTaskResults();
+      for (const entry of [...this.taskResults.values()].sort((a, b) => a.completedAt - b.completedAt)) {
+        if (entry.result.success) {
+          this.reportAuditor.seedWecomReceipt(entry.deviceId, entry.result.message);
+        }
+      }
       if (restored) {
         console.log(`[tabby-control] Restored ${restored} task result(s) from ${this.resultsFile}`);
       }
@@ -460,8 +615,50 @@ export class TaskCoordinator {
       );
     }
 
+    const requestedRequirements = [task, guidance]
+      .filter((text): text is string => text != null)
+      .map((text) => classifyWecomAuditRequirement(text))
+      .filter((requirement) => requirement != null);
+    const requestedRequirement: WecomAuditRequirement | undefined = requestedRequirements.length > 0
+      ? {
+        date: requestedRequirements[0].date,
+        requiredChannels: [...new Set(requestedRequirements.flatMap((requirement) => requirement.requiredChannels))],
+        requiredInstanceKinds: [...new Set(requestedRequirements.flatMap((requirement) => requirement.requiredInstanceKinds ?? []))],
+        requiredInstances: [...new Set(requestedRequirements.flatMap((requirement) => requirement.requiredInstances ?? []))],
+      }
+      : undefined;
+    if (isResume && requestedRequirement) {
+      const original = this.wecomAuditRequirements.get(sessionId as TaskId)?.requirement;
+      if (!original
+        || original.date !== requestedRequirement.date
+        || requestedRequirement.requiredChannels.some((channel) => !original.requiredChannels.includes(channel))
+        || requestedRequirement.requiredInstanceKinds?.some((kind) => !original.requiredInstanceKinds?.includes(kind))
+        || requestedRequirement.requiredInstances?.some((instance) => !original.requiredInstances?.includes(instance))) {
+        throw new Error(
+          'WECOM_AUDIT_RESTART_REQUIRED: guidance cannot add unaudited WeCom execution; dispatch a new complete task',
+        );
+      }
+    }
+
     const taskId: TaskId = `t_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     if (!isResume) {
+      const wecomAuditRequirement = requestedRequirement;
+      if (wecomAuditRequirement) {
+        this.wecomAuditRequirements.set(taskId, {
+          taskId,
+          deviceId,
+          createdAt: Date.now(),
+          requirement: wecomAuditRequirement,
+        });
+        try {
+          this.persistWecomAuditRequirements();
+        } catch (error) {
+          this.wecomAuditRequirements.delete(taskId);
+          throw new Error(
+            `WECOM_AUDIT_REQUIREMENT_PERSIST_FAILED: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
+      }
       this.activeTasks.set(deviceId, taskId);
     }
 
@@ -501,6 +698,7 @@ export class TaskCoordinator {
     if (!sent) {
       console.log(`[tabby-control] >>> EXECUTE_TASK >>> FAILED - device offline or not found, deviceId=${deviceId}`);
       if (!isResume) {
+        this.removeWecomAuditRequirement(taskId);
         this.updateDeviceAfterTaskExit(deviceId, taskId);
       }
       throw new Error('DEVICE_OFFLINE');
@@ -729,24 +927,34 @@ export class TaskCoordinator {
   }
 
   /** Cancel every device still running in a job. */
-  cancelJob(jobId: string): { cancelled: number; failed: Array<{ deviceId: string; error: string }> } {
+  async cancelJob(
+    jobId: string,
+  ): Promise<{ cancelled: number; failed: Array<{ deviceId: string; error: string }> }> {
     const job = this.jobs.get(jobId);
     if (!job) throw new Error(`JOB_NOT_FOUND: no job ${jobId}`);
-    let cancelled = 0;
-    const failed: Array<{ deviceId: string; error: string }> = [];
-    for (const state of job.devices.values()) {
-      if (state.status !== 'running' || !state.taskId) continue;
+    const running = [...job.devices.values()].filter(
+      (state): state is JobDeviceState & { taskId: string } =>
+        state.status === 'running' && Boolean(state.taskId),
+    );
+    const outcomes = await Promise.all(running.map(async (state) => {
       try {
-        this.cancelTask(state.deviceId, state.taskId);
-        cancelled += 1;
+        await this.cancelTask(state.deviceId, state.taskId);
+        return { cancelled: true as const, deviceId: state.deviceId };
       } catch (error) {
-        failed.push({
+        return {
+          cancelled: false as const,
           deviceId: state.deviceId,
           error: error instanceof Error ? error.message : String(error),
-        });
+        };
       }
-    }
-    return { cancelled, failed };
+    }));
+    return {
+      cancelled: outcomes.filter((outcome) => outcome.cancelled).length,
+      failed: outcomes.flatMap((outcome) => outcome.cancelled ? [] : [{
+        deviceId: outcome.deviceId,
+        error: outcome.error,
+      }]),
+    };
   }
 
   /**
@@ -827,6 +1035,11 @@ export class TaskCoordinator {
   async executeSubTask(deviceId: string, params: SubTaskExecuteParams, timeoutMs = 60_000): Promise<SubTaskResult> {
     const device = this.wsServer.getRegistry().get(deviceId);
     if (!device) throw new Error(`DEVICE_NOT_FOUND: no device with id ${deviceId}`);
+    if (classifyWecomAuditRequirement(`${params.goal}\n${params.context ?? ''}`)) {
+      throw new Error(
+        'WECOM_AUDIT_UNSUPPORTED_ENTRY: assigned WeCom execution requires agent.execute audit receipts',
+      );
+    }
 
     const subtaskId = params.subtaskId;
 
@@ -891,11 +1104,32 @@ export class TaskCoordinator {
   /**
    * Cancel a running task on a device.
    */
-  cancelTask(
+  async cancelTask(
     deviceId: string,
     taskId: string,
     source: 'user_requested' | 'caller_disconnected' = 'user_requested',
-  ): void {
+  ): Promise<TaskResult> {
+    if (taskId !== 'current') {
+      const cached = this.getTaskResult(taskId);
+      if (cached) {
+        if (cached.deviceId !== deviceId) {
+          throw new Error(
+            `TASK_NOT_FOUND: task ${taskId} did not run on device ${deviceId}`,
+          );
+        }
+        if (
+          cached.result.status === 'aborted'
+          && (cached.result.errorCode === 'USER_CANCELLED'
+            || cached.result.errorCode === 'CALLER_DISCONNECTED')
+        ) {
+          return cached.result;
+        }
+        throw new Error(
+          `CANCEL_NOT_CONFIRMED: task ${taskId} already finished with status ${cached.result.status ?? 'unknown'}`,
+        );
+      }
+    }
+
     const device = this.wsServer.getRegistry().get(deviceId);
     if (!device) {
       throw new Error(`DEVICE_NOT_FOUND: no device with id ${deviceId}`);
@@ -916,27 +1150,63 @@ export class TaskCoordinator {
       );
     }
 
-    const sent = this.wsServer.sendToDevice(deviceId, {
-      channel: 'task',
-      id: `cancel_${resolvedTaskId}`,
-      method: 'agent.cancel',
-      params: { taskId: resolvedTaskId },
+    const existing = this.pendingCancellations.get(resolvedTaskId as TaskId);
+    if (existing) return existing.promise;
+
+    let resolveConfirmation!: (value: TaskResult) => void;
+    let rejectConfirmation!: (reason: Error) => void;
+    const promise = new Promise<TaskResult>((resolve, reject) => {
+      resolveConfirmation = resolve;
+      rejectConfirmation = reject;
     });
+    const timeout = setTimeout(() => {
+      const cancellation = this.pendingCancellations.get(resolvedTaskId as TaskId);
+      if (!cancellation || cancellation.promise !== promise) return;
+      this.pendingCancellations.delete(resolvedTaskId as TaskId);
+      cancellation.reject(new Error(
+        `CANCEL_NOT_CONFIRMED: task ${resolvedTaskId} on device ${deviceId} did not return an aborted result within ${this.cancelAckTimeoutMs}ms`,
+      ));
+    }, this.cancelAckTimeoutMs);
+    this.pendingCancellations.set(resolvedTaskId as TaskId, {
+      promise,
+      resolve: resolveConfirmation,
+      reject: rejectConfirmation,
+      timeout,
+      deviceId,
+    });
+    this.taskCancellationSources.set(resolvedTaskId as TaskId, source);
+
+    let sent: boolean;
+    try {
+      sent = this.wsServer.sendToDevice(deviceId, {
+        channel: 'task',
+        id: `cancel_${resolvedTaskId}`,
+        method: 'agent.cancel',
+        params: { taskId: resolvedTaskId },
+      });
+    } catch (error) {
+      clearTimeout(timeout);
+      this.pendingCancellations.delete(resolvedTaskId as TaskId);
+      this.taskCancellationSources.delete(resolvedTaskId as TaskId);
+      throw error;
+    }
     if (!sent) {
+      clearTimeout(timeout);
+      this.pendingCancellations.delete(resolvedTaskId as TaskId);
+      this.taskCancellationSources.delete(resolvedTaskId as TaskId);
       throw new Error(`DEVICE_OFFLINE: failed to cancel task on device ${deviceId}`);
     }
 
-    this.taskCancellationSources.set(resolvedTaskId as TaskId, source);
-    this.markTaskClosed(resolvedTaskId as TaskId);
     const pending = this.pending.get(resolvedTaskId as TaskId);
     if (pending) {
+      pending.cancelling = true;
       clearTimeout(pending.timeout);
-      if (pending.firstStep) clearTimeout(pending.firstStep);
-      this.pending.delete(resolvedTaskId as TaskId);
-      pending.reject(new Error('CANCELLED'));
+      if (pending.firstStep) {
+        clearTimeout(pending.firstStep);
+        pending.firstStep = null;
+      }
     }
-    this.taskArtifacts.delete(resolvedTaskId as TaskId);
-    this.updateDeviceAfterTaskExit(deviceId, resolvedTaskId as TaskId);
+    return promise;
   }
 
   /**
@@ -1211,12 +1481,44 @@ export class TaskCoordinator {
       // RPC 同步返回与结果缓存要拿到同一份带「[桌面校验]」告警的消息。
       if (validResult) {
         const audited = enriched as TaskResult;
-        const warnings = this.reportAuditor.audit(deviceId, audited.message);
+        const persistedRequirement = this.wecomAuditRequirements.get(taskId as TaskId);
+        const hasWecomMarker = audited.message?.includes('[WECOM_AUDIT_V1]') ?? false;
+        const warnings = [
+          ...this.reportAuditor.audit(deviceId, audited.message),
+          ...(persistedRequirement && persistedRequirement.deviceId !== deviceId
+            ? ['[桌面校验] 收据上报设备与派发设备不一致']
+            : []),
+          ...(persistedRequirement || hasWecomMarker
+            ? this.reportAuditor.auditWecomReceipt(
+                deviceId,
+                audited.message,
+                persistedRequirement?.requirement,
+              )
+            : []),
+        ];
         if (warnings.length > 0) {
-          enriched = { ...audited, message: `${audited.message ?? ''}\n${warnings.join('\n')}` };
+          const uniqueWarnings = [...new Set(warnings)].filter((warning) => !audited.message?.includes(warning));
+          // 只有手机端完成门控的矛盾（非企微任务）时不借用企微错误码
+          const deviceGateOnly = warnings.every(isDeviceGateWarning);
+          enriched = {
+            ...audited,
+            ...(audited.success ? {
+              success: false,
+              status: 'error',
+              errorCode: deviceGateOnly ? 'REPORT_AUDIT_CONTRADICTED' : 'WECOM_AUDIT_INCOMPLETE',
+            } : {}),
+            message: appendReportAuditWarnings(audited.message, uniqueWarnings),
+          };
           console.warn(
-            `[tabby-control] Report audit ${deviceId} ${taskId}: ${warnings.map(w => w.replace('[桌面校验] ', '')).join(' | ')}`,
+            `[tabby-control] Report audit ${deviceId} ${taskId}: contradicted — ${warnings.map(w => w.replace('[桌面校验] ', '')).join(' | ')}`,
           );
+        } else {
+          const judgement = judgeReport(audited.message, warnings);
+          if (judgement.verdict === 'unverifiable') {
+            console.info(
+              `[tabby-control] Report audit ${deviceId} ${taskId}: unverifiable — ${judgement.basis.join(' | ')}`,
+            );
+          }
         }
       }
       if (pending) {
@@ -1235,6 +1537,7 @@ export class TaskCoordinator {
       // timed-out caller can still recover the work the phone actually did.
       if (validResult) {
         this.rememberTaskResult(taskId as TaskId, deviceId, enriched as TaskResult, !pending);
+        this.removeWecomAuditRequirement(taskId as TaskId);
         const structuredResult = enriched as TaskResult;
         if (structuredResult.status === 'blocked') {
           this.wsServer.getRegistry().updateStatus(deviceId, {
@@ -1242,6 +1545,24 @@ export class TaskCoordinator {
             lastPolicyCode: structuredResult.errorCode,
             lastBlockedReason: structuredResult.blockReason ?? structuredResult.message,
           });
+        }
+      }
+
+      const cancellation = this.pendingCancellations.get(taskId as TaskId);
+      if (cancellation) {
+        clearTimeout(cancellation.timeout);
+        this.pendingCancellations.delete(taskId as TaskId);
+        if (cancellation.deviceId !== deviceId) {
+          cancellation.reject(new Error(
+            `CANCEL_NOT_CONFIRMED: task ${taskId} returned from the wrong device`,
+          ));
+        } else if (validResult && (enriched as TaskResult).status === 'aborted') {
+          cancellation.resolve(enriched as TaskResult);
+        } else {
+          const status = validResult ? (enriched as TaskResult).status ?? 'unknown' : 'invalid';
+          cancellation.reject(new Error(
+            `CANCEL_NOT_CONFIRMED: task ${taskId} finished with status ${status}`,
+          ));
         }
       }
 
@@ -1615,7 +1936,9 @@ export class TaskCoordinator {
         // Tell the phone to drop it too, or its runner stays wedged for the
         // next dispatch as well. Best effort: it may already be offline.
         try {
-          this.cancelTask(deviceId, taskId, 'user_requested');
+          void this.cancelTask(deviceId, taskId, 'user_requested').catch(() => {
+            // The original caller already has the more specific NO_FIRST_STEP.
+          });
         } catch {
           /* device gone or task unknown — nothing left to cancel */
         }
@@ -1628,7 +1951,7 @@ export class TaskCoordinator {
         deviceId,
         rearm: () => {
           const entry = this.pending.get(taskId);
-          if (!entry) return;
+          if (!entry || entry.cancelling) return;
           clearTimeout(entry.timeout);
           entry.timeout = setTimeout(onTimeout, timeoutMs);
         },

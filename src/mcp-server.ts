@@ -404,7 +404,7 @@ async function main() {
       }
       return coordinator.getRecentTaskResults(query.deviceId, query.limit);
     },
-    cancelTask: async (deviceId, taskId) => { coordinator.cancelTask(deviceId, taskId); },
+    cancelTask: async (deviceId, taskId) => { await coordinator.cancelTask(deviceId, taskId); },
     executeSubTask: (deviceId, params, timeoutMs) => coordinator.executeSubTask(deviceId, params, timeoutMs),
     resumeOrchestration: (deviceId, params) => coordinator.resumeOrchestration(deviceId, params),
     sendTaskStart: (deviceId, params) => coordinator.sendTaskStart(deviceId, params),

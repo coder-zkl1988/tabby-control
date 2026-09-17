@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "date": "2026-09-09",
+  "requiredChannels": ["mass_send", "moments"],
+  "expectedScopes": [
+    {"instance":"main","account":"fixture-account","company":"fixture-company","channel":"mass_send"},
+    {"instance":"main","account":"fixture-account","company":"fixture-company","channel":"moments"}
+  ],
+  "scopes": [
+    {
+      "instance":"main","account":"fixture-account","company":"fixture-company","channel":"mass_send",
+      "inventoryComplete":true,"boundary":"昨天 下午3:58",
+      "finalScanComplete":true,"finalScanStep":60,"remaining":0,
+      "cards":[
+        {"id":"c1","date":"2026-09-09","time":"11:46","summary":"同一分钟第一张完整摘要",
+         "status":"sent","evidence":"已发送","observedStep":3,"sentStep":8,"verifiedStep":9},
+        {"id":"c2","date":"2026-09-09","time":"11:46","summary":"同一分钟第二张完整摘要",
+         "status":"sent","evidence":"已发送","observedStep":4,"sentStep":11,"verifiedStep":12},
+        {"id":"c3","date":"2026-09-09","time":"12:09","summary":"执行前已经发送的卡片",
+         "status":"already_sent","evidence":"已发送","observedStep":5},
+        {"id":"c4","date":"2026-09-09","time":"18:47","summary":"执行中新增的今日任务",
+         "status":"sent","evidence":"已发送","observedStep":30,"sentStep":35,"verifiedStep":36}
+      ]
+    },
+    {
+      "instance":"main","account":"fixture-account","company":"fixture-company","channel":"moments",
+      "inventoryComplete":true,"boundary":"09月08日14:30",
+      "finalScanComplete":true,"finalScanStep":65,"remaining":0,"cards":[]
+    }
+  ]
+}

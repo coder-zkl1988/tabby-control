@@ -13,6 +13,27 @@ import {
 } from '../dist/tools.js';
 
 const DEVICE_ID = 'phone-1';
+const receiptFixture = JSON.parse(readFileSync(
+  new URL('./fixtures/wecom-audit-v1.json', import.meta.url),
+  'utf8',
+));
+const auditLine = (receipt) => `[WECOM_AUDIT_V1]${JSON.stringify(receipt)}`;
+const localDayKey = (date = new Date()) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}-${month}-${day}`;
+};
+const receiptForToday = (receipt) => {
+  const date = localDayKey();
+  const copy = structuredClone(receipt);
+  copy.date = date;
+  copy.scopes = copy.scopes.map((scope) => ({
+    ...scope,
+    cards: scope.cards.map((card) => ({ ...card, date })),
+  }));
+  return copy;
+};
 
 /** Stands in for what a connected phone reports at auth. */
 const DEFAULT_VOCABULARY = {
@@ -24,7 +45,14 @@ const DEFAULT_VOCABULARY = {
 };
 
 /** Pass `actionVocabulary: null` to model a phone that reported none. */
-function createHarness({ actionVocabulary = DEFAULT_VOCABULARY, resultsFile, firstStepTimeoutMs } = {}) {
+function createHarness({
+  actionVocabulary = DEFAULT_VOCABULARY,
+  resultsFile,
+  firstStepTimeoutMs,
+  cancelAckTimeoutMs,
+  autoConfirmCancel = true,
+  syncConfirmCancel = false,
+} = {}) {
   const device = {
     info: {
       deviceId: DEVICE_ID,
@@ -37,6 +65,7 @@ function createHarness({ actionVocabulary = DEFAULT_VOCABULARY, resultsFile, fir
   };
   const sent = [];
   const notified = [];
+  let coordinator;
   const registry = {
     get(deviceId) {
       return deviceId === DEVICE_ID ? device : undefined;
@@ -55,22 +84,36 @@ function createHarness({ actionVocabulary = DEFAULT_VOCABULARY, resultsFile, fir
     },
     sendToDevice(deviceId, message) {
       sent.push({ deviceId, message });
+      if (autoConfirmCancel && message.method === 'agent.cancel') {
+        const confirm = () => coordinator.handleTaskMessage(deviceId, {
+          id: `resp_${message.params.taskId}`,
+          result: {
+            taskId: message.params.taskId,
+            success: false,
+            status: 'aborted',
+            message: 'CANCELLED',
+          },
+        });
+        if (syncConfirmCancel) confirm();
+        else queueMicrotask(confirm);
+      }
       return true;
     },
   };
 
+  coordinator = new TaskCoordinator(
+    wsServer,
+    (channel, data) => notified.push({ channel, data }),
+    {
+      resultsFile: resultsFile ?? join(mkdtempSync(join(tmpdir(), 'tabby-harness-')), 'r.json'),
+      // Real timers in these tests — pass compressed deadlines only where
+      // the timeout path itself is under test.
+      ...(firstStepTimeoutMs != null ? { firstStepTimeoutMs } : {}),
+      ...(cancelAckTimeoutMs != null ? { cancelAckTimeoutMs } : {}),
+    },
+  );
   return {
-    coordinator: new TaskCoordinator(
-      wsServer,
-      (channel, data) => notified.push({ channel, data }),
-      {
-        resultsFile: resultsFile ?? join(mkdtempSync(join(tmpdir(), 'tabby-harness-')), 'r.json'),
-        // Real timers in these tests — pass a compressed deadline only where
-        // the zombie path itself is under test; everything else keeps the
-        // production 3-minute default, which no test outlives.
-        ...(firstStepTimeoutMs != null ? { firstStepTimeoutMs } : {}),
-      },
-    ),
+    coordinator,
     device,
     notified,
     sent,
@@ -85,21 +128,150 @@ function cancelMessage(sent) {
   return sent.filter(({ message }) => message.method === 'agent.cancel').at(-1)?.message;
 }
 
-test('cancel current targets the actual running task and rejects its waiter', async () => {
-  const { coordinator, sent } = createHarness();
+test('cancel current waits for the phone terminal result before completing or marking idle', async () => {
+  const { coordinator, device, sent } = createHarness({ autoConfirmCancel: false });
   const taskPromise = coordinator.executeTask(DEVICE_ID, 'long task', 1_000);
-  const observedTask = taskPromise.catch((error) => error);
+  const taskId = executeMessage(sent).params.taskId;
+  let executeSettled = false;
+  let cancelSettled = false;
+  void taskPromise.finally(() => { executeSettled = true; });
+  const cancelPromise = coordinator.cancelTask(DEVICE_ID, 'current');
+  void cancelPromise.finally(() => { cancelSettled = true; });
+
+  assert.equal(cancelMessage(sent).params.taskId, taskId);
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(executeSettled, false);
+  assert.equal(cancelSettled, false);
+  assert.equal(device.info.status, 'busy');
+  assert.equal(device.info.currentTaskId, taskId);
+
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${taskId}`,
+    result: {
+      taskId,
+      success: false,
+      status: 'aborted',
+      message: 'Task cancelled before completion',
+      totalSteps: 3,
+    },
+  });
+
+  const [executed, cancelled] = await Promise.all([taskPromise, cancelPromise]);
+  assert.equal(executed.errorCode, 'USER_CANCELLED');
+  assert.deepEqual(cancelled, executed);
+  assert.equal(device.info.status, 'idle');
+  assert.equal(device.info.currentTaskId, undefined);
+});
+
+test('cancel confirmation timeout keeps the real task busy and recoverable', async () => {
+  const { coordinator, device, sent } = createHarness({
+    cancelAckTimeoutMs: 20,
+    autoConfirmCancel: false,
+  });
+  const taskPromise = coordinator.executeTask(DEVICE_ID, 'long task', 10);
   const taskId = executeMessage(sent).params.taskId;
 
-  try {
-    coordinator.cancelTask(DEVICE_ID, 'current');
-    assert.equal(cancelMessage(sent).params.taskId, taskId);
-    assert.match((await observedTask).message, /CANCELLED/);
-  } finally {
-    if (cancelMessage(sent)?.params.taskId !== taskId) {
-      coordinator.cancelTask(DEVICE_ID, taskId);
-    }
-  }
+  await assert.rejects(
+    coordinator.cancelTask(DEVICE_ID, taskId),
+    new RegExp(`CANCEL_NOT_CONFIRMED: task ${taskId}`),
+  );
+  await new Promise((resolve) => setTimeout(resolve, 15));
+  assert.equal(device.info.status, 'busy');
+  assert.equal(device.info.currentTaskId, taskId);
+  assert.equal(coordinator.getTaskResult(taskId), null);
+
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${taskId}`,
+    result: {
+      taskId,
+      success: false,
+      status: 'aborted',
+      message: 'Task cancelled before completion',
+      totalSteps: 4,
+    },
+  });
+  const result = await taskPromise;
+  assert.equal(result.errorCode, 'USER_CANCELLED');
+  assert.equal(coordinator.getTaskResult(taskId).result.errorCode, 'USER_CANCELLED');
+  assert.equal(device.info.status, 'idle');
+});
+
+test('exact cancellation retry reuses its cached terminal receipt without touching a newer task', async () => {
+  const oldTaskId = 't_cancelled_before_retry';
+  const cached = {
+    taskId: oldTaskId,
+    success: false,
+    status: 'aborted',
+    errorCode: 'USER_CANCELLED',
+    message: 'Task cancelled by user request before completion',
+  };
+  const resultsFile = join(mkdtempSync(join(tmpdir(), 'tabby-cancel-retry-')), 'results.json');
+  writeFileSync(resultsFile, JSON.stringify([{
+    taskId: oldTaskId,
+    deviceId: DEVICE_ID,
+    result: cached,
+    completedAt: Date.now(),
+    orphaned: true,
+  }]));
+  const { coordinator, device, sent } = createHarness({ resultsFile });
+
+  const newerTask = coordinator.executeTask(DEVICE_ID, 'newer task', 1_000);
+  const newerTaskId = executeMessage(sent).params.taskId;
+  const retried = await coordinator.cancelTask(DEVICE_ID, oldTaskId);
+
+  assert.deepEqual(retried, cached);
+  assert.equal(sent.some(({ message }) => message.method === 'agent.cancel'), false);
+  assert.equal(device.info.currentTaskId, newerTaskId);
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${newerTaskId}`,
+    result: {
+      taskId: newerTaskId,
+      success: true,
+      status: 'completed',
+      message: 'newer task completed',
+    },
+  });
+  await newerTask;
+});
+
+test('exact cancellation retry rejects a cached receipt from another device or a non-cancel terminal', async () => {
+  const { coordinator, sent } = createHarness();
+  coordinator.rememberTaskResult('t_other_device', 'phone-2', {
+    taskId: 't_other_device',
+    success: false,
+    status: 'aborted',
+    errorCode: 'USER_CANCELLED',
+  }, true);
+  coordinator.rememberTaskResult('t_completed', DEVICE_ID, {
+    taskId: 't_completed',
+    success: true,
+    status: 'completed',
+  }, false);
+
+  await assert.rejects(
+    coordinator.cancelTask(DEVICE_ID, 't_other_device'),
+    /TASK_NOT_FOUND/,
+  );
+  await assert.rejects(
+    coordinator.cancelTask(DEVICE_ID, 't_completed'),
+    /CANCEL_NOT_CONFIRMED: task t_completed already finished with status completed/,
+  );
+  assert.equal(sent.some(({ message }) => message.method === 'agent.cancel'), false);
+});
+
+test('cancel registers its receipt waiter before a synchronous phone terminal result', async () => {
+  const { coordinator, sent } = createHarness({ syncConfirmCancel: true });
+  const taskPromise = coordinator.executeTask(DEVICE_ID, 'fast cancel', 1_000);
+  const taskId = executeMessage(sent).params.taskId;
+
+  const [executed, cancelled] = await Promise.all([
+    taskPromise,
+    coordinator.cancelTask(DEVICE_ID, taskId),
+  ]);
+
+  assert.equal(cancelled.status, 'aborted');
+  assert.equal(cancelled.errorCode, 'USER_CANCELLED');
+  assert.deepEqual(cancelled, executed);
 });
 
 test('structured task policy reaches the phone unchanged', async () => {
@@ -361,6 +533,40 @@ test('late guidance for a finished task returns the retained result instead of r
   assert.equal(lateResult.totalSteps, 5);
 });
 
+test('guidance cannot upgrade a read-only or narrower WeCom loop into unaudited sending', async () => {
+  for (const originalTask of ['只读检查企微群发助手', '执行今天1v1任务']) {
+    const { coordinator, sent, device } = createHarness();
+    const originalPromise = coordinator.executeTask(DEVICE_ID, originalTask, 1_000);
+    const originalTaskId = executeMessage(sent).params.taskId;
+    coordinator.handleTaskMessage(DEVICE_ID, {
+      method: 'agent.progress',
+      params: { taskId: originalTaskId, step: 1, interaction_request: { message: '等待指令' } },
+    });
+    await originalPromise;
+    const countBefore = sent.filter(({ message }) => message.method === 'agent.execute').length;
+    await assert.rejects(coordinator.executeTask(
+      DEVICE_ID, originalTask, 1_000, '现在执行今天1v1任务和朋友圈任务', originalTaskId,
+    ), /WECOM_AUDIT_RESTART_REQUIRED/);
+    assert.equal(sent.filter(({ message }) => message.method === 'agent.execute').length, countBefore);
+    assert.equal(device.info.currentTaskId, originalTaskId);
+    assert.equal(device.info.status, 'busy');
+    coordinator.cancelTask(DEVICE_ID, originalTaskId);
+  }
+});
+
+test('an initial guidance execution requirement is retained before dispatch', async () => {
+  const { coordinator, sent } = createHarness();
+  const taskPromise = coordinator.executeTask(
+    DEVICE_ID, '打开企业微信', 1_000, '执行今天1v1任务',
+  );
+  const taskId = executeMessage(sent).params.taskId;
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${taskId}`,
+    result: { taskId, success: true, status: 'completed', message: '完成' },
+  });
+  assert.equal((await taskPromise).errorCode, 'WECOM_AUDIT_INCOMPLETE');
+});
+
 test('a second resume while one is in flight is rejected', async () => {
   const { coordinator, sent } = createHarness();
   const originalPromise = coordinator.executeTask(DEVICE_ID, 'task needing input', 1_000);
@@ -541,15 +747,14 @@ test('execute tool preserves structured policy block details', async () => {
   assert.match(output, /Policy reason: action=AWAKE/);
 });
 
-test('a result nobody is awaiting is cached so an aborted call can recover it', async () => {
+test('a result nobody is awaiting is cached so a timed-out call can recover it', async () => {
   const { coordinator, sent } = createHarness();
-  const taskPromise = coordinator.executeTask(DEVICE_ID, 'browse 10 posts', 1_000);
+  const taskPromise = coordinator.executeTask(DEVICE_ID, 'browse 10 posts', 20);
   const observed = taskPromise.catch((error) => error);
   const taskId = executeMessage(sent).params.taskId;
 
-  // The caller goes away (aborted HTTP request) before the phone answers.
-  coordinator.cancelTask(DEVICE_ID, 'current');
-  assert.match((await observed).message, /CANCELLED/);
+  // The caller times out before the phone answers.
+  assert.match((await observed).message, /TIMEOUT/);
 
   // The phone's result lands with nobody left to receive it.
   coordinator.handleTaskMessage(DEVICE_ID, {
@@ -658,14 +863,12 @@ test('the recovery tool surfaces an uncollected result and its query', async () 
   assert.match(empty.content[0].text, /No retained task results match/);
 });
 
-test('an orphaned caller-disconnect result retains its source and duration', async () => {
-  const { coordinator, sent } = createHarness();
+test('a confirmed caller-disconnect cancellation retains its source and duration', async () => {
+  const { coordinator, sent } = createHarness({ autoConfirmCancel: false });
   const taskPromise = coordinator.executeTask(DEVICE_ID, 'long task', 1_000);
-  const observed = taskPromise.catch((error) => error);
   const taskId = executeMessage(sent).params.taskId;
 
-  coordinator.cancelTask(DEVICE_ID, 'current', 'caller_disconnected');
-  assert.match((await observed).message, /CANCELLED/);
+  const cancelPromise = coordinator.cancelTask(DEVICE_ID, 'current', 'caller_disconnected');
   coordinator.handleTaskMessage(DEVICE_ID, {
     id: `resp_${taskId}`,
     result: {
@@ -677,6 +880,9 @@ test('an orphaned caller-disconnect result retains its source and duration', asy
       duration: 16_921,
     },
   });
+  const [executed, cancelled] = await Promise.all([taskPromise, cancelPromise]);
+  assert.equal(executed.errorCode, 'CALLER_DISCONNECTED');
+  assert.deepEqual(cancelled, executed);
 
   const tool = createGetTaskResultsTool({
     getTaskResults: async () => [coordinator.getTaskResult(taskId)],
@@ -688,7 +894,7 @@ test('an orphaned caller-disconnect result retains its source and duration', asy
   assert.match(recovered.content[0].text, /Duration: 16\.9s/);
 });
 
-test('cancellation sources are pruned with their closed task ids', async () => {
+test('confirmed cancellation sources are cleaned up instead of accumulating', async () => {
   const { coordinator, sent } = createHarness();
   const taskIds = [];
 
@@ -703,7 +909,7 @@ test('cancellation sources are pruned with their closed task ids', async () => {
   }
 
   assert.equal(coordinator.taskCancellationSources.has(taskIds[0]), false);
-  assert.equal(coordinator.taskCancellationSources.has(taskIds.at(-1)), true);
+  assert.equal(coordinator.taskCancellationSources.has(taskIds.at(-1)), false);
 });
 
 test('cancel tool defaults to the current task', async () => {
@@ -881,7 +1087,7 @@ test('a phone reporting itself idle drops the remembered task', async () => {
   // would cancel something that already finished.
   device.info = { ...device.info, status: 'idle' };
 
-  assert.throws(() => coordinator.cancelTask(DEVICE_ID, 'current'), /TASK_NOT_FOUND/);
+  await assert.rejects(coordinator.cancelTask(DEVICE_ID, 'current'), /TASK_NOT_FOUND/);
 });
 
 test('a large fan-out does not evict the earliest devices\' results', async () => {
@@ -963,6 +1169,35 @@ test('dispatch returns at once instead of waiting for the fleet', async () => {
   assert.equal(status.done, false);
 
   coordinator.cancelJob(jobId);
+});
+
+test('job cancellation is counted only after the phone confirms termination', async () => {
+  const { coordinator, device, sent } = createHarness({ autoConfirmCancel: false });
+  const { jobId } = coordinator.dispatchTasks(
+    [{ deviceId: DEVICE_ID, task: 'long sweep' }],
+    60_000,
+  );
+  const taskId = executeMessage(sent).params.taskId;
+  let settled = false;
+  const cancelPromise = coordinator.cancelJob(jobId).then((result) => {
+    settled = true;
+    return result;
+  });
+
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.equal(settled, false);
+  assert.equal(device.info.status, 'busy');
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${taskId}`,
+    result: {
+      taskId,
+      success: false,
+      status: 'aborted',
+      message: 'Task cancelled before completion',
+    },
+  });
+  assert.deepEqual(await cancelPromise, { cancelled: 1, failed: [] });
+  assert.equal(device.info.status, 'idle');
 });
 
 test('a job reports each device outcome as it settles', async () => {
@@ -1085,6 +1320,121 @@ test('results survive a coordinator restart via the persistence file', async () 
   assert.equal(restored.result.message, 'survives restarts');
 });
 
+test('assigned WeCom success without a receipt is downgraded consistently before return, cache, notification, and job status', async () => {
+  const { coordinator, notified, sent } = createHarness();
+  const promise = coordinator.executeTask(DEVICE_ID, '执行主应用今天的朋友圈任务', 1_000);
+  const taskId = executeMessage(sent).params.taskId;
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${taskId}`,
+    result: { taskId, success: true, status: 'completed', message: '完成', totalSteps: 3 },
+  });
+
+  const returned = await promise;
+  assert.equal(returned.success, false);
+  assert.equal(returned.status, 'error');
+  assert.equal(returned.errorCode, 'WECOM_AUDIT_INCOMPLETE');
+  assert.match(returned.message, /WECOM_AUDIT_V1|收据/);
+  assert.deepEqual(coordinator.getTaskResult(taskId).result, returned);
+  assert.deepEqual(
+    notified.find(({ channel }) => channel === 'device:task_result').data.result,
+    returned,
+  );
+
+  const jobHarness = createHarness();
+  const { jobId } = jobHarness.coordinator.dispatchTasks([
+    { deviceId: DEVICE_ID, task: '执行主应用今天的朋友圈任务' },
+  ], 1_000);
+  const jobTaskId = executeMessage(jobHarness.sent).params.taskId;
+  jobHarness.coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${jobTaskId}`,
+    result: { taskId: jobTaskId, success: true, status: 'completed', message: '完成' },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  const job = jobHarness.coordinator.getJobStatus(jobId, { includeResults: true });
+  assert.equal(job.succeeded, 0);
+  assert.equal(job.failed, 1);
+  assert.match(job.failures[0].error, /收据|WECOM_AUDIT_V1/);
+});
+
+test('valid receipt passes, original failures stay failed, and replayed results are idempotent', async () => {
+  const { coordinator, notified, sent } = createHarness();
+  const todayReceipt = receiptForToday(receiptFixture);
+  const okPromise = coordinator.executeTask(
+    DEVICE_ID,
+    '在三台名称为企微专用的手机上执行1v1任务和朋友圈任务',
+    1_000,
+  );
+  const okTaskId = executeMessage(sent).params.taskId;
+  const okResult = {
+    taskId: okTaskId,
+    success: true,
+    status: 'completed',
+    message: `完成\n${auditLine(todayReceipt)}`,
+  };
+  coordinator.handleTaskMessage(DEVICE_ID, { id: `resp_${okTaskId}`, result: okResult });
+  assert.equal((await okPromise).success, true);
+  coordinator.handleTaskMessage(DEVICE_ID, { id: `resp_${okTaskId}`, result: okResult });
+  assert.equal(
+    notified.filter(({ channel }) => channel === 'device:task_result').length,
+    1,
+  );
+
+  const failedPromise = coordinator.executeTask(DEVICE_ID, '执行主应用今天的朋友圈任务', 1_000);
+  const failedTaskId = executeMessage(sent, 1).params.taskId;
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${failedTaskId}`,
+    result: {
+      taskId: failedTaskId,
+      success: false,
+      status: 'blocked',
+      errorCode: 'IDENTITY_BLOCKED',
+      message: '身份验证阻断',
+    },
+  });
+  const failed = await failedPromise;
+  assert.equal(failed.success, false);
+  assert.equal(failed.status, 'blocked');
+  assert.equal(failed.errorCode, 'IDENTITY_BLOCKED');
+});
+
+test('restored structured receipts seed sent dedup across coordinator restarts', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'tabby-results-')), 'task-results.json');
+  const first = createHarness({ resultsFile: file });
+  first.coordinator.rememberTaskResult(
+    't_previous_wecom',
+    DEVICE_ID,
+    {
+      taskId: 't_previous_wecom',
+      success: true,
+      status: 'completed',
+      message: auditLine(receiptFixture),
+    },
+    false,
+  );
+  await new Promise((resolve) => setTimeout(resolve, 800));
+
+  const second = createHarness({ resultsFile: file });
+  const promise = second.coordinator.executeTask(
+    DEVICE_ID,
+    '在三台名称为企微专用的手机上执行1v1任务和朋友圈任务',
+    1_000,
+  );
+  const taskId = executeMessage(second.sent).params.taskId;
+  second.coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${taskId}`,
+    result: {
+      taskId,
+      success: true,
+      status: 'completed',
+      message: auditLine(receiptFixture),
+    },
+  });
+  const result = await promise;
+  assert.equal(result.success, false);
+  assert.equal(result.status, 'error');
+  assert.match(result.message, /重复|已在其他任务/);
+});
+
 test('a corrupt persistence file is ignored, not fatal', async () => {
   const file = join(mkdtempSync(join(tmpdir(), 'tabby-results-')), 'task-results.json');
   writeFileSync(file, '{not json[', 'utf8');
@@ -1110,6 +1460,88 @@ test('an unknown task policy key is rejected instead of silently dropped', async
     ),
     /commenting/,
   );
+});
+
+test('legacy subtask entry rejects assigned WeCom execution before sending to the phone', async () => {
+  const { coordinator, sent } = createHarness();
+  await assert.rejects(
+    coordinator.executeSubTask(DEVICE_ID, {
+      taskId: 'legacy-wecom-task',
+      subtaskId: 'legacy-wecom-subtask',
+      goal: '执行主应用今天的朋友圈任务',
+      context: '',
+      maxSteps: 3,
+      timeoutMs: 15_000,
+    }, 20),
+    /WECOM_AUDIT_UNSUPPORTED_ENTRY/,
+  );
+  assert.equal(sent.some(({ message }) => message.method === 'subtask.execute'), false);
+});
+
+test('persisted WeCom requirement still downgrades an orphan success after coordinator restart', async () => {
+  const file = join(mkdtempSync(join(tmpdir(), 'tabby-results-')), 'task-results.json');
+  const first = createHarness({ resultsFile: file });
+  const timedOut = first.coordinator.executeTask(
+    DEVICE_ID,
+    '执行主应用今天的朋友圈任务',
+    20,
+  ).catch((error) => error);
+  const taskId = executeMessage(first.sent).params.taskId;
+  assert.match(readFileSync(`${file}.wecom-requirements.json`, 'utf8'), new RegExp(taskId));
+  assert.match((await timedOut).message, /TIMEOUT/);
+
+  const second = createHarness({ resultsFile: file });
+  second.coordinator.handleTaskMessage(DEVICE_ID, {
+    id: `resp_${taskId}`,
+    result: { taskId, success: true, status: 'completed', message: '旧手机完成' },
+  });
+  const restored = second.coordinator.getTaskResult(taskId).result;
+  assert.equal(restored.success, false);
+  assert.equal(restored.status, 'error');
+  assert.equal(restored.errorCode, 'WECOM_AUDIT_INCOMPLETE');
+});
+
+test('a marked orphan result is strictly validated even when its dispatch requirement is unavailable', () => {
+  const { coordinator } = createHarness();
+  const badReceipt = structuredClone(receiptFixture);
+  badReceipt.scopes[0].cards[0].evidence = '仍未发送';
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: 'resp_t_marked_orphan',
+    result: {
+      taskId: 't_marked_orphan',
+      success: true,
+      status: 'completed',
+      message: auditLine(badReceipt),
+    },
+  });
+  const result = coordinator.getTaskResult('t_marked_orphan').result;
+  assert.equal(result.success, false);
+  assert.equal(result.errorCode, 'WECOM_AUDIT_INCOMPLETE');
+});
+
+test('a valid single-channel orphan receipt is not treated as proof of a fabricated channel requirement', () => {
+  const { coordinator } = createHarness();
+  const singleChannelReceipt = structuredClone(receiptFixture);
+  singleChannelReceipt.requiredChannels = ['mass_send'];
+  singleChannelReceipt.expectedScopes = singleChannelReceipt.expectedScopes.filter(
+    (scope) => scope.channel === 'mass_send',
+  );
+  singleChannelReceipt.scopes = singleChannelReceipt.scopes.filter(
+    (scope) => scope.channel === 'mass_send',
+  );
+  coordinator.handleTaskMessage(DEVICE_ID, {
+    id: 'resp_t_single_channel_orphan',
+    result: {
+      taskId: 't_single_channel_orphan',
+      success: true,
+      status: 'completed',
+      message: auditLine(singleChannelReceipt),
+    },
+  });
+  const result = coordinator.getTaskResult('t_single_channel_orphan').result;
+  assert.equal(result.success, false);
+  assert.match(result.message, /缺少派发核验记录，无法确认任务范围/);
+  assert.doesNotMatch(result.message, /requiredChannels 与派发要求不一致/);
 });
 
 test('a task heartbeating at step 0 is failed once the first-step deadline passes', async () => {

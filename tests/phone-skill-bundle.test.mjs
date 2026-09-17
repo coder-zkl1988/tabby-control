@@ -154,7 +154,7 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
     'utf8',
   );
 
-  assert.equal(wecom.version, 12);
+  assert.equal(wecom.version, 14);
   assert.deepEqual(
     wecom.subskills.map(({ id }) => id).sort(),
     [
@@ -173,6 +173,8 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
     ],
   );
   assert.match(instructions, /消息 \/ 邮件 \/ 文档 \/ 工作台 \/ 通讯录/);
+  assert.match(instructions, /普通导航[\s\S]*禁止携带 `WECOM_AUDIT`/);
+  assert.match(instructions, /单独使用 `WAIT` 提交 plan/);
   assert.match(instructions, /默认只读/);
   assert.match(instructions, /发送 \/ 保存 \/ 提交 \/ 打卡 \/ 确认添加 \/ 发起会议/);
   assert.match(approvalReport, /假勤[\s\S]*财务[\s\S]*行政[\s\S]*人事/);
@@ -199,7 +201,7 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
   );
   assert.match(multiInstance, /无法区分实例/);
   assert.match(multiInstance, /重开抽屉[\s\S]*勾选/);
-  assert.match(multiInstance, /实例 × 企业/);
+  assert.match(multiInstance, /实例 × 账号 × 企业 × 渠道/);
   assert.match(momentsPublish, /待你发表的/);
   // Ordering within the publishable set is still oldest-first; the today-lock
   // narrows WHICH cards qualify, it does not change the order they go out in.
@@ -225,9 +227,16 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
   assert.match(massSend, /群发助手/);
   assert.match(massSend, /只显示时:分/);
   assert.match(massSend, /昨天[\s\S]*一律不点发送/);
-  // v46-v48: 逐张发送必须重新截图确认卡片从待发列表消失（强于旧的"成功标记"措辞）。
-  assert.match(massSend, /逐张处理[\s\S]*已从待发列表消失[\s\S]*下一张/);
-  assert.match(massSend, /卡片N \| 上方时间标注/);
+  // Sent cards can retain their body; verify status instead of disappearance.
+  assert.match(massSend, /新截图[\s\S]*「已发送」状态或对应发送记录/);
+  assert.match(massSend, /正文仍在不代表未发/);
+  assert.match(massSend, /同一时间组可以有多张卡片/);
+  assert.match(massSend, /不能按时间去重/);
+  assert.match(massSend, /WECOM_AUDIT/);
+  assert.match(massSend, /final_scan/);
+  assert.match(momentsPublish, /仍无法确认则记 unknown/);
+  assert.doesNotMatch(momentsPublish, /读不准时一律按「早于今天」/);
+  assert.match(instructions, /授权覆盖范围内的逐卡发送和确认页/);
   // The timestamp sits above the card it belongs to, so reading it off the
   // card above sends yesterday's message to customers — an observed error.
   assert.match(massSend, /时间标注属于它下方那张卡片/);
@@ -236,6 +245,14 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
   // the wrong way and miss today's cards entirely.
   assert.match(massSend, /最早在最上、最新在最底部/);
   assert.match(massSend, /不要一路翻到列表最顶部/);
+  // v58: the boundary is decided by the LABEL FORMAT (bare clock time = today),
+  // not by tracking overlapping screenshots upward. The old wording demanded the
+  // latter and cost a real run 57 of its 60 steps on inventory alone, sending
+  // nothing. Both channels now carry a hard screen cap so a slow scan degrades
+  // into an honest partial report instead of a dead task.
+  assert.match(massSend, /看它的格式就够了/);
+  assert.match(massSend, /最多向上翻 6 屏/);
+  assert.match(momentsPublish, /最多向下滑 6 屏/);
   const androidCore = await readFile(
     new URL('phone-skills/system/android-core/instructions.md', ROOT),
     'utf8',

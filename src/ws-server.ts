@@ -193,6 +193,13 @@ export class DeviceRegistry {
     return this.devices.get(deviceId);
   }
 
+  markActivity(deviceId: string, at: number = Date.now()): void {
+    const session = this.devices.get(deviceId);
+    if (!session) return;
+    session.lastActivityAt = at;
+    session.info = { ...session.info, lastSeen: at };
+  }
+
   list(): DeviceInfo[] {
     return Array.from(this.devices.values()).map(s => s.info);
   }
@@ -599,11 +606,10 @@ export class WsServer {
     }, HEARTBEAT_INTERVAL_MS);
 
     ws.on('pong', () => {
-      lastActivity = Date.now();
-      // Update registry activity tracking
+      const now = Date.now();
+      lastActivity = now;
       if (deviceId) {
-        const s = this.registry.get(deviceId);
-        if (s) s.lastActivityAt = Date.now();
+        this.registry.markActivity(deviceId, now);
       }
     });
 

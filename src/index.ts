@@ -163,7 +163,7 @@ class InProcessBridge {
   }
 
   async cancelTask(deviceId: string, taskId: string): Promise<void> {
-    this.coordinator.cancelTask(deviceId, taskId);
+    await this.coordinator.cancelTask(deviceId, taskId);
   }
 
   async getStatus(deviceId: string) {
@@ -284,7 +284,7 @@ export function startHttpServer(
               });
               break;
             case 'device_cancel_job':
-              result = coordinator.cancelJob(params.jobId as string);
+              result = await coordinator.cancelJob(params.jobId as string);
               break;
             case 'device_execute_batch': {
               const tasks = params.tasks as Array<{ deviceId: string; task: string }>;
@@ -301,7 +301,7 @@ export function startHttpServer(
               });
               break;
             case 'device_cancel_task':
-              coordinator.cancelTask(
+              await coordinator.cancelTask(
                 params.deviceId as string,
                 (params.taskId as string | undefined) ?? 'current',
               );
@@ -374,6 +374,7 @@ export function startHttpServer(
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
           const code = msg.includes('NOT_FOUND') ? 'DEVICE_NOT_FOUND'
+            : msg.includes('CANCEL_NOT_CONFIRMED') ? 'CANCEL_NOT_CONFIRMED'
             : msg.includes('TIMEOUT') ? 'TIMEOUT'
             : msg.includes('OFFLINE') ? 'DEVICE_OFFLINE'
             : msg.includes('BUSY') ? 'TASK_ALREADY_RUNNING'

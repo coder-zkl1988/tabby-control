@@ -450,6 +450,183 @@ export const StepRecordSchema = z.object({
 });
 export type StepRecord = z.infer<typeof StepRecordSchema>;
 
+// ─── WeCom Audit Receipt ────────────────────────────────────────────────────
+
+export const WecomAuditChannelSchema = z.enum(["mass_send", "moments"]);
+export type WecomAuditChannel = z.infer<typeof WecomAuditChannelSchema>;
+
+const LocalDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
+  const [year, month, day] = value.split("-").map(Number);
+  const parsed = new Date(Date.UTC(year, month - 1, day));
+  return parsed.getUTCFullYear() === year
+    && parsed.getUTCMonth() === month - 1
+    && parsed.getUTCDate() === day;
+}, "invalid calendar date");
+
+export const WecomAuditScopeIdentitySchema = z.object({
+  instance: z.string().trim().min(1),
+  account: z.string().trim().min(1),
+  company: z.string().trim().min(1),
+  channel: WecomAuditChannelSchema,
+}).strict();
+export type WecomAuditScopeIdentity = z.infer<typeof WecomAuditScopeIdentitySchema>;
+
+const POSITIVE_SENT_EVIDENCE = /^(?:已发送|发送成功|已发表|发表成功)$/;
+const POSITIVE_CANCELLED_EVIDENCE = /^(?:已取消|取消成功|已撤销)$/;
+
+export const WecomAuditCardSchema = z.object({
+  id: z.string().trim().min(1),
+  date: LocalDateSchema,
+  time: z.string().trim().min(1),
+  summary: z.string().trim().min(1),
+  status: z.enum([
+    "pending",
+    "sent",
+    "already_sent",
+    "cancelled",
+    "blocked",
+    "unknown",
+  ]),
+  evidence: z.string().trim().min(1).optional(),
+  observedStep: z.number().int().nonnegative(),
+  sentStep: z.number().int().nonnegative().optional(),
+  verifiedStep: z.number().int().nonnegative().optional(),
+}).strict().superRefine((card, ctx) => {
+  const evidence = card.evidence ?? "";
+  if (card.status === "sent" || card.status === "already_sent") {
+    if (!POSITIVE_SENT_EVIDENCE.test(evidence)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["evidence"],
+        message: `${card.status} requires unambiguous positive status evidence`,
+      });
+    }
+  } else if (card.status === "cancelled"
+    && !POSITIVE_CANCELLED_EVIDENCE.test(evidence)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["evidence"],
+      message: "cancelled requires unambiguous positive status evidence",
+    });
+  }
+  if (card.status !== "sent") return;
+  if (card.sentStep == null || card.verifiedStep == null) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "sent cards require sentStep and verifiedStep",
+    });
+    return;
+  }
+  if (!(card.observedStep < card.sentStep && card.sentStep < card.verifiedStep)) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      message: "sent card steps must satisfy observedStep < sentStep < verifiedStep",
+    });
+  }
+});
+export type WecomAuditCard = z.infer<typeof WecomAuditCardSchema>;
+
+export const WecomAuditScopeSchema = WecomAuditScopeIdentitySchema.extend({
+  inventoryComplete: z.boolean(),
+  boundary: z.string().trim().min(1),
+  finalScanComplete: z.boolean(),
+  finalScanStep: z.number().int().nonnegative(),
+  remaining: z.number().int().nonnegative(),
+  cards: z.array(WecomAuditCardSchema),
+}).strict();
+export type WecomAuditScope = z.infer<typeof WecomAuditScopeSchema>;
+
+function wecomScopeKey(scope: WecomAuditScopeIdentity): string {
+  return [scope.instance, scope.account, scope.company, scope.channel].join("\u0000");
+}
+
+export const WecomAuditReceiptV1Schema = z.object({
+  version: z.literal(1),
+  date: LocalDateSchema,
+  requiredChannels: z.array(WecomAuditChannelSchema).min(1),
+  expectedScopes: z.array(WecomAuditScopeIdentitySchema).min(1),
+  scopes: z.array(WecomAuditScopeSchema).min(1),
+}).strict().superRefine((receipt, ctx) => {
+  if (new Set(receipt.requiredChannels).size !== receipt.requiredChannels.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["requiredChannels"], message: "duplicate channel" });
+  }
+
+  const expectedKeys = receipt.expectedScopes.map(wecomScopeKey);
+  const scopeKeys = receipt.scopes.map(wecomScopeKey);
+  if (new Set(expectedKeys).size !== expectedKeys.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["expectedScopes"], message: "duplicate scope" });
+  }
+  if (new Set(scopeKeys).size !== scopeKeys.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["scopes"], message: "duplicate scope" });
+  }
+  if (expectedKeys.length !== scopeKeys.length
+    || expectedKeys.some((key) => !scopeKeys.includes(key))) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["scopes"],
+      message: "scopes must exactly cover expectedScopes",
+    });
+  }
+
+  const expectedChannelsByIdentity = new Map<string, Set<WecomAuditChannel>>();
+  for (const scope of receipt.expectedScopes) {
+    const identity = [scope.instance, scope.account, scope.company].join("\u0000");
+    const channels = expectedChannelsByIdentity.get(identity) ?? new Set<WecomAuditChannel>();
+    channels.add(scope.channel);
+    expectedChannelsByIdentity.set(identity, channels);
+  }
+  for (const channels of expectedChannelsByIdentity.values()) {
+    for (const required of receipt.requiredChannels) {
+      if (!channels.has(required)) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ["expectedScopes"],
+          message: `each identity must cover required channel ${required}`,
+        });
+      }
+    }
+  }
+
+  const latestSentStep = Math.max(
+    -1,
+    ...receipt.scopes.flatMap((scope) => scope.cards.flatMap((card) => (
+      card.status === "sent" && card.sentStep != null ? [card.sentStep] : []
+    ))),
+  );
+  receipt.scopes.forEach((scope, scopeIndex) => {
+    if (new Set(scope.cards.map((card) => card.id)).size !== scope.cards.length) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["scopes", scopeIndex, "cards"],
+        message: "duplicate card id within scope",
+      });
+    }
+    if (scope.cards.some((card) => card.date !== receipt.date)) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["scopes", scopeIndex, "cards"],
+        message: "card date must match receipt date",
+      });
+    }
+    const latestScopeStep = Math.max(
+      -1,
+      ...scope.cards.flatMap((card) => [
+        card.observedStep,
+        ...(card.sentStep == null ? [] : [card.sentStep]),
+        ...(card.verifiedStep == null ? [] : [card.verifiedStep]),
+      ]),
+    );
+    if (scope.finalScanStep <= latestSentStep || scope.finalScanStep <= latestScopeStep) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ["scopes", scopeIndex, "finalScanStep"],
+        message: "finalScanStep must be after every observedStep, sentStep, and verifiedStep",
+      });
+    }
+  });
+});
+export type WecomAuditReceiptV1 = z.infer<typeof WecomAuditReceiptV1Schema>;
+
 // ─── Task Result ─────────────────────────────────────────────────────────────
 
 export const TaskResultSchema = z.object({

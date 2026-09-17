@@ -145,3 +145,82 @@ test('HTTP execute_task reports cancellation with a stable error code', async (t
     },
   });
 });
+
+test('HTTP cancel_task responds only after the phone confirms an aborted terminal result', async (t) => {
+  let confirmCancel;
+  const coordinator = {
+    cancelTask() {
+      return new Promise((resolve) => { confirmCancel = resolve; });
+    },
+  };
+  const bridge = { async listDevices() { return []; } };
+  const server = startHttpServer(
+    0,
+    coordinator,
+    bridge,
+    () => {},
+    { info() {} },
+    () => {},
+    () => {},
+  );
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  await once(server, 'listening');
+  const address = server.address();
+  assert.equal(typeof address, 'object');
+
+  let responseSettled = false;
+  const responsePromise = fetch(`http://127.0.0.1:${address.port}/rpc`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      method: 'device_cancel_task',
+      params: { deviceId: 'phone-1', taskId: 'task-1' },
+    }),
+  }).then((response) => {
+    responseSettled = true;
+    return response;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(responseSettled, false);
+
+  confirmCancel({ taskId: 'task-1', success: false, status: 'aborted' });
+  const response = await responsePromise;
+  assert.deepEqual(await response.json(), { result: { cancelled: true } });
+});
+
+test('HTTP cancel_task reports an unconfirmed cancellation with a stable error code', async (t) => {
+  const coordinator = {
+    async cancelTask() {
+      throw new Error('CANCEL_NOT_CONFIRMED: task task-1 on device phone-1');
+    },
+  };
+  const bridge = { async listDevices() { return []; } };
+  const server = startHttpServer(
+    0,
+    coordinator,
+    bridge,
+    () => {},
+    { info() {} },
+    () => {},
+    () => {},
+  );
+  t.after(() => new Promise((resolve) => server.close(resolve)));
+  await once(server, 'listening');
+  const address = server.address();
+  assert.equal(typeof address, 'object');
+
+  const response = await fetch(`http://127.0.0.1:${address.port}/rpc`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({
+      method: 'device_cancel_task',
+      params: { deviceId: 'phone-1', taskId: 'task-1' },
+    }),
+  });
+  assert.deepEqual(await response.json(), {
+    error: {
+      code: 'CANCEL_NOT_CONFIRMED',
+      message: 'CANCEL_NOT_CONFIRMED: task task-1 on device phone-1',
+    },
+  });
+});

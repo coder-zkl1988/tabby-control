@@ -194,7 +194,7 @@ export class BridgeClient {
   }
 
   async cancelTask(deviceId: string, taskId: string): Promise<void> {
-    await this.call('device_cancel_task', { deviceId, taskId });
+    await this.call<{ cancelled: true }>('device_cancel_task', { deviceId, taskId });
   }
 
   async getStatus(deviceId: string): Promise<DeviceInfo | null> {

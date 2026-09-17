@@ -1,0 +1,21 @@
+[
+  {"task":"在三台名称为企微专用的手机上执行1v1任务和朋友圈任务","channels":["mass_send","moments"]},
+  {"task":"执行主应用今天的朋友圈任务","channels":["moments"]},
+  {"task":"执行今天1v1任务","channels":["mass_send"]},
+  {"task":"企业微信：处理今天群发助手待发卡片","channels":["mass_send"]},
+  {"task":"将企微今天待发表的朋友圈全部发表","channels":["moments"]},
+  {"task":"完成本次1v1发送和朋友圈任务，非今天不要发送","channels":["mass_send","moments"]},
+  {"task":"执行今天的1v1和朋友圈任务，遇到验证不要发送","channels":["mass_send","moments"]},
+  {"task":"执行企微分身每个企业的1v1和朋友圈任务","channels":["mass_send","moments"]},
+  {"task":"核查三部手机企微1v1和朋友圈哪些漏发了","channels":[]},
+  {"task":"查看今天的1v1和朋友圈任务，不要发送","channels":[]},
+  {"task":"企微只读检查群发助手，禁止发送","channels":[]},
+  {"task":"查看企微群发助手，发送操作不要执行","channels":[]},
+  {"task":"在企业微信发布以下朋友圈：今天的活动照片","channels":[]},
+  {"task":"给企业微信联系人发送一条消息","channels":[]},
+  {"task":"执行微信朋友圈任务","channels":[]},
+  {"task":"在小红书回复评论","channels":[]},
+  {"task":"执行检查企微1v1，不要发送","channels":[]},
+  {"task":"检查漏发并补发今天1v1","channels":["mass_send"]},
+  {"task":"执行今天1v1和朋友圈任务；禁止发送昨天和更早卡片","channels":["mass_send","moments"]}
+]
