@@ -291,7 +291,7 @@ export function createExecuteTaskTool(client: DeviceBridge) {
         },
         maxSteps: {
           type: 'number',
-          description: 'Maximum number of VLM steps (default: 50). Limits the autonomous agent loop iterations.',
+          description: 'OPTIONAL, AND USUALLY OMIT IT. Maximum number of VLM steps. Omitted, the phone applies its own budget of 100, which is the right choice for nearly every task. Set it only to make a run stop EARLIER than that. A value that runs out mid-task kills the whole run with "Task reached maximum steps" and discards every step already spent, so never set it below what the task plainly needs — a profile edit covering several fields, or a per-card send sweep, routinely needs 60-100.',
         },
         allowedActions: {
           type: 'array',

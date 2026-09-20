@@ -154,7 +154,7 @@ test('WeCom v1 covers verified work modules and commit boundaries', async () => 
     'utf8',
   );
 
-  assert.equal(wecom.version, 14);
+  assert.equal(wecom.version, 17);
   assert.deepEqual(
     wecom.subskills.map(({ id }) => id).sort(),
     [

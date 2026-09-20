@@ -21,6 +21,29 @@ const intentFixture = JSON.parse(readFileSync(
 ));
 const auditLine = (receipt) => `[WECOM_AUDIT_V1]${JSON.stringify(receipt)}`;
 
+test('send/publish wording adjacent to card/群发/朋友圈 nouns counts as assigned execution (2026-09-18 bypass)', () => {
+  const now = new Date('2026-09-18T12:00:00+08:00');
+  const bulk = classifyWecomAuditRequirement(
+    '企微群发发送（katy羊 @新氧，只发两张卡）。第一步：彻底关闭企微应用，再重新打开；通过 AWAKE 弹窗进入【带分身角标的企微分身】，核对水印为「katy羊@新氧」',
+    now,
+  );
+  assert.ok(bulk, 'bulk-send wording must require an audit receipt');
+  assert.deepEqual(bulk.requiredChannels, ['mass_send']);
+
+  const moments = classifyWecomAuditRequirement(
+    '企微朋友圈检查（katy羊@新氧）：今日指派卡片按从早到新顺序全部发表',
+    now,
+  );
+  assert.ok(moments, 'moments publish wording must require an audit receipt');
+  assert.deepEqual(moments.requiredChannels, ['moments']);
+
+  const readOnly = classifyWecomAuditRequirement(
+    '只读导航，禁止点击任何「发送」「发表」按钮：通过 AWAKE 弹窗进入企微主应用，在消息列表里找到「群发助手」会话并点进去，停在群发助手页面',
+    now,
+  );
+  assert.equal(readOnly, null, 'read-only navigation must not require a receipt');
+});
+
 test('desktop warnings preserve the exact final receipt for subsequent validation', () => {
   const receipt = auditLine(receiptFixture);
   const warning = '[桌面校验] 缺少派发核验记录，无法确认任务范围';

@@ -5,7 +5,7 @@
     "com.tencent.wework"
   ],
   "name": "企业微信专家",
-  "version": 14,
+  "version": 17,
   "priority": 10,
   "author": "system",
   "activation": {

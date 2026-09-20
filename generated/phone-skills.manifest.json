@@ -1,9 +1,9 @@
 {
   "schemaVersion": 2,
-  "bundleVersion": 58,
+  "bundleVersion": 63,
   "minAppVersion": "1.0.15",
   "digestAlgorithm": "SHA-256",
-  "digest": "c1c18f751de4e54bc68c03c9318b2642a9108dc2b1f4d87d19df46558f6af652",
+  "digest": "e1c8b1497ff664cb413b933118a675ea38dc249e964d2e48401982a54960c444",
   "skills": [
     {
       "id": "android-core-v1",
@@ -56,7 +56,7 @@
     {
       "id": "xhs-v1",
       "kind": "app",
-      "version": 34,
+      "version": 36,
       "targetPackages": [
         "com.xingin.xhs",
         "com.xingin.xhs.international"
@@ -82,7 +82,7 @@
     {
       "id": "wecom-v1",
       "kind": "app",
-      "version": 14,
+      "version": 17,
       "targetPackages": [
         "com.tencent.wework"
       ]

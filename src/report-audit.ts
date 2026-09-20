@@ -72,6 +72,23 @@ export interface WecomAuditRequirement {
   requiredInstances?: string[];
 }
 
+const SELF_PUBLISH_MARKERS = /(?:发布|发表|发送)以下|以下(?:朋友圈|内容|文案)|文案[:：]|物料|配图/;
+const NEGATED_CLAUSE = /(?:不要|禁止|不得|无需|别|不)(?:执行|点击|点|按|操作|发送|发表)/;
+const SEND_WORDING = /(?:发送|发表).{0,12}(?:卡片|卡|群发|朋友圈)|(?:群发|朋友圈|卡片).{0,12}(?:发送|发表)/;
+
+/**
+ * 「发送/发表」动词与「卡/群发/朋友圈」名词相邻，且不在否定从句里、也不是自发朋友圈。
+ * 输入是去掉条件性禁令之后、但仍保留其余否定词的文本，这样才能按从句识别否定。
+ */
+function sendWordingIsAssigned(text: string): boolean {
+  if (SELF_PUBLISH_MARKERS.test(text)) return false;
+  const positive = text
+    .split(/[，。；;：:]/)
+    .filter((clause) => !NEGATED_CLAUSE.test(clause))
+    .join("，");
+  return SEND_WORDING.test(positive);
+}
+
 export function classifyWecomAuditRequirement(
   task: string,
   now = new Date(),
@@ -93,11 +110,17 @@ export function classifyWecomAuditRequirement(
     || /(?:1v1|群发助手|群发任务|朋友圈任务).{0,24}(?:执行|处理|完成|补发)/.test(affirmative)
     || /检查漏发并补发.{0,24}(?:1v1|群发助手|群发任务|朋友圈任务)/.test(affirmative)
     || (explicitlyWecom && /待发表/.test(affirmative) && /发表/.test(affirmative))
-    || (explicitlyWecom && /(?:执行|处理|完成).{0,24}(?:指派|待办|任务)/.test(affirmative));
+    || (explicitlyWecom && /(?:执行|处理|完成).{0,24}(?:指派|待办|任务)/.test(affirmative))
+    // 2026-09-18: 「企微群发发送（只发两张卡）」「企微朋友圈检查…全部发表」做的是同一件事，却因为
+    // 措辞不含「执行/待办/群发助手」而完全不触发审计，当天 7 次无收据的成功全走的这条缝。
+    // 只要点明是企微，且「发送/发表」动词与「卡/群发/朋友圈」名词相邻，就按指派执行对待——
+    // 但只看肯定从句：「发送操作不要执行」「禁止点击「发送」按钮」这类从句整条丢弃，
+    // 携带文案/物料的自发朋友圈（「发布以下朋友圈：…」）也不算指派。
+    || (explicitlyWecom && sendWordingIsAssigned(withoutConditionalGuards));
   if (!assignedExecution) return null;
 
   const requiredChannels: WecomAuditChannel[] = [];
-  if (/1v1|群发助手|群发任务|待发卡片/.test(affirmative)) requiredChannels.push("mass_send");
+  if (/1v1|群发|待发卡片/.test(affirmative)) requiredChannels.push("mass_send");
   if (/朋友圈/.test(affirmative)) requiredChannels.push("moments");
   if (requiredChannels.length === 0 && explicitlyWecom) {
     requiredChannels.push("mass_send", "moments");
