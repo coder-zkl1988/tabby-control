@@ -1,9 +1,9 @@
 {
   "schemaVersion": 2,
-  "bundleVersion": 63,
+  "bundleVersion": 64,
   "minAppVersion": "1.0.15",
   "digestAlgorithm": "SHA-256",
-  "digest": "e1c8b1497ff664cb413b933118a675ea38dc249e964d2e48401982a54960c444",
+  "digest": "f17f519da5f443a09f0faf977e751018b978af14d4b8f62e6c11fb052664ad1d",
   "skills": [
     {
       "id": "android-core-v1",
@@ -56,7 +56,7 @@
     {
       "id": "xhs-v1",
       "kind": "app",
-      "version": 36,
+      "version": 37,
       "targetPackages": [
         "com.xingin.xhs",
         "com.xingin.xhs.international"
