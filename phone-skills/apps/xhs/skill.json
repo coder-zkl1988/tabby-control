@@ -6,7 +6,7 @@
     "com.xingin.xhs.international"
   ],
   "name": "小红书专家",
-  "version": 37,
+  "version": 38,
   "priority": 10,
   "author": "system",
   "activation": {
@@ -125,14 +125,10 @@
         "内容研究",
         "研究任务",
         "RECORD_JSON",
-        "账号定位",
         "关键词浏览",
-        "停留",
         "互动配置",
         "首页自然浏览",
-        "逐篇浏览",
-        "结构化记录",
-        "本次最多"
+        "逐篇浏览"
       ]
     },
     {
