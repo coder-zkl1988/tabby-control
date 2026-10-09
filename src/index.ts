@@ -355,6 +355,7 @@ export function startHttpServer(
                   filename: params.filename as string,
                   mimeType: params.mimeType as string,
                   dataBase64: params.dataBase64 as string,
+                  album: params.album as string | undefined,
                 },
                 (params.timeoutMs as number) ?? 30_000,
               );

@@ -730,7 +730,7 @@ export class TaskCoordinator {
    */
   async pushMedia(
     deviceId: string,
-    media: { filename: string; mimeType: string; dataBase64: string },
+    media: { filename: string; mimeType: string; dataBase64: string; album?: string },
     timeoutMs = 30_000,
   ): Promise<MediaPushResult> {
     const mediaId = randomUUID();

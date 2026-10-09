@@ -287,6 +287,8 @@ export const MediaPushParamsSchema = z.object({
   mediaId: z.string().min(1),
   filename: z.string().min(1),
   mimeType: z.string().min(1),
+  /** Relative Pictures subdirectory. Older callers omit it and use Tabby. */
+  album: z.string().min(1).max(128).optional(),
   /** Base64-encoded image bytes (no data: prefix). */
   dataBase64: z.string().min(1),
 });
