@@ -146,6 +146,23 @@ export class DeviceRegistry {
         ...existing.info,
         status: 'idle',
         lastSeen: now,
+        // The phone's build state starts unknown again, as on a first
+        // connection: a reconnect is how an APK switch shows up here (see
+        // actionVocabulary below), so the old connection's values may describe
+        // a build that is gone, and a stale policy mode misleads every policy
+        // check. The phone reports them itself: the skill sync fields with the
+        // skill.hello it sends right after auth, the runtime modes with its
+        // next task's TASK_START progress. Device identity and task fields are
+        // kept: a build switch does not change the device, and a task can
+        // outlive a network blip without the phone re-announcing it on connect.
+        devicePolicyMode: undefined,
+        deviceSkillLayerMode: undefined,
+        skillSchemaVersion: undefined,
+        skillBundleVersion: undefined,
+        skillDigest: undefined,
+        skillSyncStatus: undefined,
+        skillSyncError: undefined,
+        skillLastSyncedAt: undefined,
       };
       existing.lastActivityAt = now;
       // Re-read the vocabulary rather than keeping the one from the first
