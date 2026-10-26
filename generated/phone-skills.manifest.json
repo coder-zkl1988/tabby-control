@@ -1,9 +1,9 @@
 {
   "schemaVersion": 2,
-  "bundleVersion": 65,
+  "bundleVersion": 66,
   "minAppVersion": "1.0.15",
   "digestAlgorithm": "SHA-256",
-  "digest": "449942e97fd240050e2e0cde0d78cd45ab09e773dbd0b23d42234b318dc9ad15",
+  "digest": "0f006e34d4d90f8072679efb0c520103b81c771fb61efe5f5c16e5ef32ad0fd6",
   "skills": [
     {
       "id": "android-core-v1",
@@ -32,7 +32,7 @@
     {
       "id": "android-media-picker-v1",
       "kind": "system",
-      "version": 1,
+      "version": 2,
       "targetPackages": []
     },
     {
@@ -56,7 +56,7 @@
     {
       "id": "xhs-v1",
       "kind": "app",
-      "version": 38,
+      "version": 39,
       "targetPackages": [
         "com.xingin.xhs",
         "com.xingin.xhs.international"

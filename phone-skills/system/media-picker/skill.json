@@ -3,7 +3,7 @@
   "kind": "system",
   "targetPackages": [],
   "name": "Android 媒体选择器",
-  "version": 1,
+  "version": 2,
   "priority": 80,
   "author": "system",
   "activation": {
