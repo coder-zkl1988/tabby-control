@@ -12,7 +12,7 @@
  */
 
 import WebSocket, { WebSocketServer as WSServer } from 'ws';
-import { type Server as HTTPServer } from 'http';
+import { type IncomingMessage, type Server as HTTPServer } from 'http';
 import { appendFileSync, renameSync, rmSync, statSync } from 'fs';
 import { join } from 'path';
 
@@ -74,6 +74,26 @@ import {
   buildPhoneActionVocabulary,
 } from './protocol.js';
 import { PhoneSkillCatalog } from './phone-skill-catalog.js';
+import { phoneKeyFromRequestUrl } from './device-keys.js';
+
+export type DeviceAuthDecision =
+  | { ok: true }
+  | { ok: false; code: string; reason: string; message: string };
+
+export type DeviceAuthenticator = (
+  key: string | null,
+  deviceId: string,
+  model?: string,
+) => DeviceAuthDecision;
+
+/** Path of an upgrade request URL, without its query string. */
+export function upgradePathname(url: string | undefined): string {
+  try {
+    return new URL(url ?? '/', 'http://localhost').pathname;
+  } catch {
+    return '/';
+  }
+}
 
 // ─── DeviceSession ───────────────────────────────────────────────────────────
 
@@ -382,6 +402,7 @@ export class WsServer {
    */
   private vlmCredentialProvider?: () => VlmCredential | null;
   private telemetryConsentProvider?: () => boolean | null;
+  private deviceAuthenticator?: DeviceAuthenticator;
   private phoneSkillCatalog: PhoneSkillCatalog;
 
   constructor(
@@ -429,6 +450,15 @@ export class WsServer {
 
   setTelemetryConsentProvider(provider: () => boolean | null): void {
     this.telemetryConsentProvider = provider;
+  }
+
+  /**
+   * Require a paired-device key (the `key` query parameter of the phone's WS
+   * URL) before a phone is registered. Without one, any message carrying a
+   * deviceId is accepted — the legacy behaviour kept for the MCP server.
+   */
+  setDeviceAuthenticator(authenticator: DeviceAuthenticator): void {
+    this.deviceAuthenticator = authenticator;
   }
 
   /**
@@ -540,9 +570,11 @@ export class WsServer {
    */
   attachToServer(server: HTTPServer): void {
     server.prependListener('upgrade', (req, socket, head) => {
-      const url = req.url ?? '/';
-      console.log(`[tabby-control] TCP upgrade: url=${JSON.stringify(url)}, phone=${url === '/phone'}, mirror=${url === '/mirror'}, remote=${req.socket.remoteAddress}`);
-      if (url === '/phone') {
+      // Match on the path only: phone URLs carry `?key=…`, which must never
+      // reach a log line.
+      const pathname = upgradePathname(req.url);
+      console.log(`[tabby-control] TCP upgrade: path=${JSON.stringify(pathname)}, phone=${pathname === '/phone'}, mirror=${pathname === '/mirror'}, remote=${req.socket.remoteAddress}`);
+      if (pathname === '/phone') {
         const origEnd = socket.end.bind(socket);
         const origDestroy = socket.destroy.bind(socket);
         socket.end = () => socket;
@@ -594,7 +626,8 @@ export class WsServer {
 
   // ─── Connection Handler ─────────────────────────────────────────────────────
 
-  private handleConnection(ws: WebSocket, _req: unknown): void {
+  private handleConnection(ws: WebSocket, req?: IncomingMessage): void {
+    const phoneKey = phoneKeyFromRequestUrl(req?.url);
     let deviceId: string | null = null;
     let authed = false;
     flog(`PHONE CONNECT: new connection`);
@@ -673,6 +706,22 @@ export class WsServer {
             ws.close(4003, 'auth failed');
             console.log(`[tabby-control] auth failed: no deviceId in msg`);
             return;
+          }
+
+          // Paired-device check: only a phone holding a valid key for this
+          // deviceId may receive the connected envelope (and with it the
+          // user's VLM credential). Unset authenticator = legacy keyless mode
+          // (standalone MCP server).
+          if (this.deviceAuthenticator) {
+            const decision = this.deviceAuthenticator(phoneKey, deviceIdCandidate, capabilities?.model);
+            if (!decision.ok) {
+              clearTimeout(authTimeout);
+              ws.send(JSON.stringify({ type: 'error', code: decision.code, message: decision.message }));
+              ws.close(4003, 'pairing required');
+              console.log(`[tabby-control] auth refused for ${deviceIdCandidate}: ${decision.reason}`);
+              flog(`PHONE AUTH REFUSED: device=${deviceIdCandidate}, reason=${decision.reason}`);
+              return;
+            }
           }
 
           clearTimeout(authTimeout);

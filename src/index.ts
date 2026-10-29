@@ -11,6 +11,15 @@ import { WsServer, type VlmCredential } from './ws-server.js';
 import { TaskCoordinator } from './task-coordinator.js';
 import { BridgeClient } from './bridge.js';
 import { Orchestrator } from './orchestrator.js';
+import { DeviceKeyStore, UNCLAIMED_KEY_TTL_MS } from './device-keys.js';
+import {
+  PairingRequestStore,
+  buildPhoneWsUrl,
+  handlePairingHttp,
+  loadOrCreateDesktopId,
+  pickPhoneFacingHost,
+} from './pairing.js';
+import { startLanAdvertiser, type LanAdvertiser } from './lan-advertiser.js';
 import type { DeviceBridge, TaskResult, SubTaskResult, SubTaskExecuteParams, OrchestrationResult, ResumeParams, TaskStartParams, TaskEndParams, CachedTaskResult, TaskResultQuery, TaskPolicy } from './protocol.js';
 import {
   createDeviceListTool,
@@ -97,6 +106,53 @@ interface TabbyPluginApi {
   config?: Record<string, unknown>;
   pluginConfig?: Record<string, unknown>;
   registerTool(factory: (ctx: { sessionKey?: string }) => TabbyTool | null): void;
+  /** OpenClaw plugin service lifecycle; used to unpublish mDNS on shutdown. */
+  registerService?(service: { id: string; start: () => void | Promise<void>; stop?: () => void | Promise<void> }): void;
+}
+
+// ─── LAN pairing (desktop side) ─────────────────────────────────────────────
+
+/**
+ * Pairing operations the controller drives over the RPC port. Every one of
+ * them hands out (or decides on) a device key, so they are loopback-only.
+ */
+export interface PairingRpc {
+  list(): unknown;
+  approve(requestId: string, host?: string): boolean;
+  reject(requestId: string): boolean;
+  createQr(host?: string): { wsUrl: string; expiresInSec: number };
+}
+
+export function createPairingRpc(opts: {
+  store: PairingRequestStore;
+  keys: DeviceKeyStore;
+  wsPort: number;
+  enabled: boolean;
+}): PairingRpc {
+  return {
+    list: () => ({ enabled: opts.enabled, requests: opts.store.listPending() }),
+    approve: (requestId, host) =>
+      opts.store.approve(requestId, (request) => {
+        const key = opts.keys.mint({ source: 'lan', deviceId: request.deviceId, model: request.model });
+        return buildPhoneWsUrl(
+          pickPhoneFacingHost({ localAddress: request.localAddress, hostOverride: host }),
+          opts.wsPort,
+          key,
+        );
+      }) !== undefined,
+    reject: (requestId) => opts.store.reject(requestId),
+    createQr: (host) => {
+      const key = opts.keys.mint({ source: 'qr' });
+      return {
+        wsUrl: buildPhoneWsUrl(pickPhoneFacingHost({ hostOverride: host }), opts.wsPort, key),
+        expiresInSec: UNCLAIMED_KEY_TTL_MS / 1000,
+      };
+    },
+  };
+}
+
+function isLoopback(address: string | undefined): boolean {
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1';
 }
 
 // ─── In-process bridge ──────────────────────────────────────────────────────
@@ -201,6 +257,7 @@ export function startHttpServer(
   logger: TabbyLogger,
   setVlmCredential: (cred: VlmCredential | null) => void,
   setTelemetryConsent: (consent: boolean) => void,
+  pairing?: PairingRpc,
 ): HTTPServer {
   const server = createServer(async (req, res) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
@@ -238,6 +295,41 @@ export function startHttpServer(
 
           // Accept both dot notation (device.execute_task) and underscore notation (device_execute_task)
           const normalizedMethod = method.replace('.', '_');
+          if (normalizedMethod.startsWith('device_pairing_')) {
+            // Pairing mints device keys: only the local controller may call it,
+            // even though this RPC port listens on all interfaces.
+            if (!pairing || !isLoopback(req.socket.remoteAddress)) {
+              res.writeHead(403, { 'Content-Type': 'application/json' });
+              res.end(JSON.stringify({ error: { code: 'FORBIDDEN', message: 'pairing RPC is loopback-only' } }));
+              return;
+            }
+            const requestId = typeof params?.requestId === 'string' ? params.requestId : '';
+            const host = typeof params?.host === 'string' ? params.host : undefined;
+            let pairingResult: unknown;
+            switch (normalizedMethod) {
+              case 'device_pairing_list':
+                pairingResult = pairing.list();
+                break;
+              case 'device_pairing_approve':
+                if (!pairing.approve(requestId, host)) throw new Error('PAIRING_NOT_FOUND: request is no longer pending');
+                pairingResult = { ok: true };
+                break;
+              case 'device_pairing_reject':
+                if (!pairing.reject(requestId)) throw new Error('PAIRING_NOT_FOUND: request is no longer pending');
+                pairingResult = { ok: true };
+                break;
+              case 'device_pairing_create_qr':
+                pairingResult = pairing.createQr(host);
+                break;
+              default:
+                res.writeHead(400, { 'Content-Type': 'application/json' });
+                res.end(JSON.stringify({ error: { code: 'UNKNOWN_METHOD', message: `Unknown method: ${method}` } }));
+                return;
+            }
+            res.writeHead(200, { 'Content-Type': 'application/json' });
+            res.end(JSON.stringify({ result: pairingResult }));
+            return;
+          }
           switch (normalizedMethod) {
             case 'device_list':
               result = await bridge.listDevices();
@@ -374,7 +466,8 @@ export function startHttpServer(
           res.end(JSON.stringify({ result }));
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          const code = msg.includes('NOT_FOUND') ? 'DEVICE_NOT_FOUND'
+          const code = msg.includes('PAIRING_NOT_FOUND') ? 'PAIRING_NOT_FOUND'
+            : msg.includes('NOT_FOUND') ? 'DEVICE_NOT_FOUND'
             : msg.includes('CANCEL_NOT_CONFIRMED') ? 'CANCEL_NOT_CONFIRMED'
             : msg.includes('TIMEOUT') ? 'TIMEOUT'
             : msg.includes('OFFLINE') ? 'DEVICE_OFFLINE'
@@ -429,6 +522,9 @@ export default {
     const config = {
       wsPort: typeof pluginConfig.wsPort === 'number' ? pluginConfig.wsPort : 18790,
       rpcPort: typeof pluginConfig.rpcPort === 'number' ? pluginConfig.rpcPort : DEFAULT_CONFIG.rpcPort,
+      // LAN discovery + pairing (mDNS advert and /api/v1/pair endpoints).
+      // Device-key auth on the phone socket is enforced either way.
+      lanPairing: pluginConfig.lanPairing !== false,
     };
 
     const ipcNotifier = (channel: string) => {
@@ -470,7 +566,23 @@ export default {
     };
     wsServer.setTelemetryConsentProvider(() => currentTelemetryConsent);
 
+    // Paired-device keys: a phone only gets the connected envelope (and the
+    // VLM credential in it) with a key from a QR code or an approved LAN
+    // pairing. Persisted in ~/.openclaw/tabby-control/paired-devices.json
+    // (SHA-256 only), next to task-results.json.
+    const deviceKeys = new DeviceKeyStore({ logger });
+    wsServer.setDeviceAuthenticator((key, deviceId, model) => {
+      const decision = deviceKeys.authenticate(key, deviceId, model);
+      if (decision.ok && decision.claimedNow) {
+        logger.info(`[tabby-control] device key claimed by ${deviceId} (${decision.record.source})`);
+      }
+      return decision.ok ? { ok: true } : decision;
+    });
+    const pairingStore = new PairingRequestStore({ accepting: () => config.lanPairing });
+    let lanAdvertiser: LanAdvertiser | null = null;
+
     const httpServer = createServer((req, res) => {
+      if (handlePairingHttp(req, res, pairingStore)) return;
       if (req.url === '/health') {
         res.writeHead(200, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ status: 'ok', port: config.wsPort }));
@@ -552,7 +664,25 @@ export default {
         });
 
         const inProcess = new InProcessBridge(coordinator, wsServer.getRegistry(), ipcNotifier);
-        startHttpServer(config.rpcPort, coordinator, inProcess, ipcNotifier, logger, setVlmCredential, setTelemetryConsent);
+        const pairingRpc = createPairingRpc({
+          store: pairingStore,
+          keys: deviceKeys,
+          wsPort: config.wsPort,
+          enabled: config.lanPairing,
+        });
+        startHttpServer(config.rpcPort, coordinator, inProcess, ipcNotifier, logger, setVlmCredential, setTelemetryConsent, pairingRpc);
+        // Only the worker that owns the phone port advertises it.
+        if (config.lanPairing) {
+          try {
+            lanAdvertiser = startLanAdvertiser({
+              port: config.wsPort,
+              desktopId: loadOrCreateDesktopId(),
+              logger,
+            });
+          } catch (err) {
+            logger.warn(`[tabby-control] mDNS advertisement unavailable: ${err instanceof Error ? err.message : String(err)}`);
+          }
+        }
         logger.info(`[tabby-control] WebSocket on ws://0.0.0.0:${config.wsPort}/phone`);
         resolve(inProcess);
       });
@@ -591,6 +721,16 @@ export default {
     });
 
     logger.info('[tabby-control] registered device control tool factories (lazy bridge)');
+
+    api.registerService?.({
+      id: 'tabby-control-lan-discovery',
+      start: () => {},
+      stop: async () => {
+        const advertiser = lanAdvertiser;
+        lanAdvertiser = null;
+        await advertiser?.stop();
+      },
+    });
 
     // Start server in background
     httpServer.listen(config.wsPort, '0.0.0.0', () => {

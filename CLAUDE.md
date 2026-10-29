@@ -53,7 +53,7 @@ The protocol between PC and Android phone is defined entirely in `protocol.ts` a
 | `mirror` | bidirectional | Screen snapshots (phone→PC) + click/swipe/text/key events (PC→phone) |
 | `control` | phone→PC | Device info updates (current app, status) |
 
-Phones connect at `ws://<pc>:18800/phone`. No authentication token required.
+Phones connect at `ws://<pc>:<wsPort>/phone?key=<device key>`. The key comes from a QR code (`device_pairing_create_qr`, unclaimed for 600 s) or an approved LAN pairing (`src/pairing.ts`, mDNS `_itabby._tcp` + `/api/v1/pair` on the same port). `src/device-keys.ts` stores only SHA-256 hashes in `~/.openclaw/tabby-control/paired-devices.json`, binds a key to the first `deviceId` that uses it, and a phone without a valid key gets `{type:'error', code:'PAIRING_REQUIRED'}` + close 4003 before any `connected` envelope (and VLM credential) is sent. The MCP server entry (`mcp-server.ts`) sets no authenticator and stays keyless.
 
 ### In-process bridge
 
@@ -62,7 +62,7 @@ In standalone mode, `InProcessBridge` calls `TaskCoordinator` directly (no HTTP 
 ## Key design decisions
 
 - **Zod-first protocol**: All wire protocol types are defined as Zod schemas in `protocol.ts`. Import from there, not from other modules.
-- **No token auth on phones**: The plugin accepts any phone connection with a valid `deviceId`. Auth is not enforced at the WebSocket layer.
+- **Device-key auth on phones** (plugin entry only): see the WebSocket protocol section. `device_pairing_*` RPC methods mint keys and are loopback-only.
 - **Task IDs are opaque strings**: Generated as `t_${Date.now()}_${random}` on the PC side; phones echo them back in results.
 - **Timeout per task**: Default 300s, max 600s. Configured per-call via `timeoutMs` parameter.
 - **Progress callbacks**: `TaskCoordinator.onProgress()` allows subscribing to real-time step updates from phones during task execution.

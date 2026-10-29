@@ -34,6 +34,11 @@
         "default": 18801,
         "description": "HTTP RPC port for controller queries"
       },
+      "lanPairing": {
+        "type": "boolean",
+        "default": true,
+        "description": "局域网自动发现与配对：通过 mDNS 广播 _itabby._tcp，并在手机端口上提供 /api/v1/pair 配对接口。关闭后只能扫码配对。"
+      },
       "authTokenLifetime": {
         "type": "number",
         "description": "配对 Token 有效期（秒）。",
